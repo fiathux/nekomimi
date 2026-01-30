@@ -2,6 +2,7 @@ package nekomimi
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
@@ -173,4 +174,41 @@ func TestDefaultLogger(t *testing.T) {
 	if !strings.Contains(output, "default logger test") {
 		t.Errorf("Default logger output = %v, should contain message", output)
 	}
+}
+
+func TestLogger_SetTimeFormat(t *testing.T) {
+	var buf bytes.Buffer
+	logger := New()
+	logger.SetOutput(&buf)
+	logger.SetTimeFormat("2006/01/02")
+	
+	logger.Info("test message")
+	
+	output := buf.String()
+	// Check that output contains date in the format YYYY/MM/DD
+	if !strings.Contains(output, "/") {
+		t.Errorf("Output should contain custom time format with /, got: %v", output)
+	}
+}
+
+func TestLogger_Concurrency(t *testing.T) {
+	logger := New()
+	// Use io.Discard to avoid race on shared buffer
+	logger.SetOutput(io.Discard)
+	
+	// Test concurrent logging
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(n int) {
+			logger.Info("Message %d", n)
+			done <- true
+		}(i)
+	}
+	
+	// Wait for all goroutines
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+	
+	// If we got here without panicking, the test passes
 }

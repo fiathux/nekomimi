@@ -4,8 +4,8 @@ package nekomimi
 import (
 	"fmt"
 	"io"
-	"log"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -41,6 +41,7 @@ func (l LogLevel) String() string {
 
 // Logger represents a simple logger instance
 type Logger struct {
+	mu         sync.RWMutex
 	level      LogLevel
 	output     io.Writer
 	prefix     string
@@ -59,30 +60,43 @@ func New() *Logger {
 
 // SetLevel sets the minimum log level
 func (l *Logger) SetLevel(level LogLevel) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.level = level
 }
 
 // SetOutput sets the output destination
 func (l *Logger) SetOutput(w io.Writer) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.output = w
 }
 
 // SetPrefix sets the prefix for log messages
 func (l *Logger) SetPrefix(prefix string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.prefix = prefix
 }
 
 // SetTimeFormat sets the time format for log messages
 func (l *Logger) SetTimeFormat(format string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.timeFormat = format
 }
 
 // log is the internal logging function
 func (l *Logger) log(level LogLevel, format string, args ...interface{}) {
-	if level < l.level {
+	l.mu.RLock()
+	currentLevel := l.level
+	l.mu.RUnlock()
+
+	if level < currentLevel {
 		return
 	}
 
+	l.mu.RLock()
 	timestamp := time.Now().Format(l.timeFormat)
 	message := fmt.Sprintf(format, args...)
 	
@@ -93,7 +107,10 @@ func (l *Logger) log(level LogLevel, format string, args ...interface{}) {
 		logLine = fmt.Sprintf("[%s] [%s] %s\n", timestamp, level.String(), message)
 	}
 
-	l.output.Write([]byte(logLine))
+	output := l.output
+	l.mu.RUnlock()
+
+	output.Write([]byte(logLine))
 }
 
 // Debug logs a debug message
@@ -162,5 +179,5 @@ func SetTimeFormat(format string) {
 // Fatal logs an error message and exits the program
 func Fatal(format string, args ...interface{}) {
 	defaultLogger.Error(format, args...)
-	log.Fatal()
+	os.Exit(1)
 }
