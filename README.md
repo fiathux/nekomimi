@@ -1,6 +1,6 @@
 # nekomimi
 
-A very light-weight and simple enough log module for golang
+A very light-weight and simple logging module for golang with advanced features like trace logging, derived loggers, and customizable handlers.
 
 ## Installation
 
@@ -11,11 +11,15 @@ go get github.com/fiathux/nekomimi
 ## Features
 
 - Simple and lightweight logging
-- Multiple log levels: DEBUG, INFO, WARN, ERROR
-- Customizable log prefix
+- Multiple log levels: DEBUG, INFO, WARN, ERROR, PANIC, FATAL
+- Three types of logging methods per level: simple, formatted, and deferred
+- Trace logging for request/operation tracking with unique IDs
+- Derived loggers with hierarchical prefixes
+- Customizable log handlers
 - Customizable time format
-- Support for multiple logger instances
-- Printf-style formatting
+- Configurable call trace level
+- Thread-safe operations
+- Zero-cost deferred logging (skipped if level is disabled)
 
 ## Quick Start
 
@@ -23,22 +27,18 @@ go get github.com/fiathux/nekomimi
 package main
 
 import (
-    "github.com/fiathux/nekomimi"
+	"github.com/fiathux/nekomimi"
 )
 
 func main() {
-    // Use the default logger
-    nekomimi.Info("Application started")
-    nekomimi.Warn("This is a warning")
-    nekomimi.Error("This is an error")
-    
-    // Set log level
-    nekomimi.SetLevel(nekomimi.DEBUG)
-    nekomimi.Debug("Debug messages now visible")
-    
-    // Add a prefix
-    nekomimi.SetPrefix("MyApp")
-    nekomimi.Info("Message with prefix")
+	// Create a logger with default configuration
+	logger := nekomimi.New("MyApp", nekomimi.LogConfig{})
+	
+	// Use different log levels
+	logger.Dbg("Debug message")
+	logger.Inf("Application started")
+	logger.War("This is a warning")
+	logger.Err("This is an error")
 }
 ```
 
@@ -46,75 +46,225 @@ func main() {
 
 ### Basic Logging
 
+Each log level supports three types of methods:
+
 ```go
-nekomimi.Debug("Debug message")
-nekomimi.Info("Info message")
-nekomimi.Warn("Warning message")
-nekomimi.Error("Error message")
+logger := nekomimi.New("App", nekomimi.LogConfig{})
+
+// Simple message logging (fastest)
+logger.Dbg("Debug message")
+logger.Inf("Info message")
+logger.War("Warning message")
+logger.Err("Error message")
+
+// Formatted message logging
+logger.Dbgf("User %s logged in", username)
+logger.Inff("Processing %d items", count)
+logger.Warf("Retry attempt %d/%d", current, max)
+logger.Errf("Failed to connect: %v", err)
+
+// Deferred message logging (useful for expensive operations)
+// Only executed if the log level is enabled
+if logFunc := logger.DbgP(); logFunc != nil {
+	expensiveData := computeExpensiveData()
+	logFunc("Debug data:", expensiveData)
+}
 ```
 
-### Custom Logger Instance
+### Custom Logger Configuration
 
 ```go
-logger := nekomimi.New()
-logger.SetPrefix("Service")
-logger.SetLevel(nekomimi.INFO)
-logger.Info("Custom logger message")
+logger := nekomimi.New("MyService", nekomimi.LogConfig{
+	Level:          nekomimi.INFO,  // Minimum log level
+	LevelWithTrace: nekomimi.WARN,  // Show call trace for WARN and above
+	TimeFormat:     "15:04:05.000", // Custom time format
+	Handler:        customHandler,   // Optional custom handler
+})
+
+logger.Dbg("This will NOT be logged (below INFO level)")
+logger.Inf("This will be logged")
+logger.War("This will be logged with file:line info")
+```
+
+### Trace Logging
+
+Track operations or requests with unique trace IDs:
+
+```go
+logger := nekomimi.New("API", nekomimi.LogConfig{})
+
+// Create a trace logger for a specific operation
+trace := logger.Trace("RequestHandler")
+trace.Inf("Processing request")
+trace.Dbgf("Request ID: %s", trace.TraceID())
+trace.Inf("Request completed")
+// Output includes trace name and ID: <RequestHandler:019c2342-46d6-720c-a672-6f61f38d2f19>
+```
+
+### Derived Loggers
+
+Create loggers with hierarchical prefixes for different components:
+
+```go
+mainLogger := nekomimi.New("App", nekomimi.LogConfig{})
+
+// Create derived loggers for different components
+dbLogger := mainLogger.Derive("Database")
+apiLogger := mainLogger.Derive("API")
+
+dbLogger.Inf("Connection established")
+// Output: [INFO], App.Database - Connection established
+
+apiLogger.Inf("Server started")
+// Output: [INFO], App.API - Server started
+
+// Derived loggers can have independent log levels
+dbLogger.SetLevel(nekomimi.WARN)
+```
+
+### Custom Log Handler
+
+Implement custom log handling (e.g., write to file, send to external service):
+
+```go
+import "os"
+
+file, _ := os.Create("app.log")
+customHandler := &nekomimi.LogHandlerFunc{
+	RegularLogFunc: func(level nekomimi.LogLevel, header string, message ...any) {
+		file.WriteString(header)
+		fmt.Fprintln(file, message...)
+	},
+}
+
+logger := nekomimi.New("FileLogger", nekomimi.LogConfig{
+	Handler: customHandler,
+})
+```
+
+### Panic and Fatal Logging
+
+```go
+logger := nekomimi.New("App", nekomimi.LogConfig{})
+
+// Panic logs the message with stack trace and then panics
+logger.Panic("Critical error occurred")
+logger.Panicf("Panic: %v", err)
+
+// Fatal logs the message with stack trace and exits the program
+logger.Fatal("Fatal error, exiting")
+logger.Fatalf("Fatal: %v", err)
+```
+
+## API Reference
+
+### Creating a Logger
+
+```go
+func New(name string, config LogConfig) Logger
+```
+
+Creates a new logger instance with the given name and configuration.
+
+### LogConfig
+
+```go
+type LogConfig struct {
+	Handler        LogHandler // Custom log handler (optional)
+	Level          LogLevel   // Minimum log level (default: DEBUG)
+	LevelWithTrace LogLevel   // Level to include call trace (default: none)
+	TimeFormat     string     // Time format (default: "2006-01-02 15:04:05.000")
+}
 ```
 
 ### Log Levels
 
 ```go
-// Set minimum log level (only messages at this level or higher will be shown)
-nekomimi.SetLevel(nekomimi.DEBUG) // Shows all messages
-nekomimi.SetLevel(nekomimi.INFO)  // Shows INFO, WARN, ERROR
-nekomimi.SetLevel(nekomimi.WARN)  // Shows WARN, ERROR
-nekomimi.SetLevel(nekomimi.ERROR) // Shows only ERROR
+const (
+	DEBUG  // Detailed debugging information
+	INFO   // General informational messages
+	WARN   // Warning messages
+	ERROR  // Error messages
+	PANIC  // Critical errors that cause panic
+	FATAL  // Fatal errors that terminate the program
+)
 ```
 
-### Formatted Messages
+### Logger Interface
 
 ```go
-name := "Alice"
-age := 30
-nekomimi.Info("User %s is %d years old", name, age)
+type Logger interface {
+	BaiscLogger
+	
+	// Panic/Fatal logging
+	Panic(message ...any)
+	Panicf(format string, args ...any)
+	Fatal(message ...any)
+	Fatalf(format string, args ...any)
+	
+	// Create a trace logger
+	Trace(name string) TraceLogger
+	
+	// Create a derived logger
+	Derive(prefix string) Logger
+	
+	// Configuration
+	SetLevel(level LogLevel)
+	SetCallTraceLevel(level LogLevel)
+	SetTimeFormat(format string)
+	SetLogHandler(handler LogHandler)
+	WrapLogHandler(wrapper func(old LogHandler) LogHandler)
+}
 ```
 
-### Custom Output
+### BaiscLogger Interface
 
 ```go
-file, _ := os.Create("app.log")
-nekomimi.SetOutput(file)
-nekomimi.Info("This goes to the file")
+type BaiscLogger interface {
+	// Debug level
+	Dbg(message ...any)
+	Dbgf(format string, args ...any)
+	DbgP() func(message ...any)
+	
+	// Info level
+	Inf(message ...any)
+	Inff(format string, args ...any)
+	InfP() func(message ...any)
+	
+	// Warning level
+	War(message ...any)
+	Warf(format string, args ...any)
+	WarP() func(message ...any)
+	
+	// Error level
+	Err(message ...any)
+	Errf(format string, args ...any)
+	ErrP() func(message ...any)
+}
 ```
 
-## API Reference
+### TraceLogger Interface
 
-### Logger Methods
+```go
+type TraceLogger interface {
+	BaiscLogger
+	
+	// Get trace information
+	TraceID() string
+	TraceName() string
+}
+```
 
-- `New()` - Create a new logger instance
-- `SetLevel(level LogLevel)` - Set the minimum log level
-- `SetOutput(w io.Writer)` - Set the output destination
-- `SetPrefix(prefix string)` - Set the log prefix
-- `SetTimeFormat(format string)` - Set the time format
-- `Debug(format string, args ...interface{})` - Log debug message
-- `Info(format string, args ...interface{})` - Log info message
-- `Warn(format string, args ...interface{})` - Log warning message
-- `Error(format string, args ...interface{})` - Log error message
+## Examples
 
-### Package-Level Functions
+See the [examples/basic](examples/basic/main.go) directory for a comprehensive demo covering all features.
 
-The package provides convenient functions that use a default logger:
+To run the demo:
 
-- `Debug(format string, args ...interface{})`
-- `Info(format string, args ...interface{})`
-- `Warn(format string, args ...interface{})`
-- `Error(format string, args ...interface{})`
-- `Fatal(format string, args ...interface{})` - Log error and exit
-- `SetLevel(level LogLevel)`
-- `SetOutput(w io.Writer)`
-- `SetPrefix(prefix string)`
-- `SetTimeFormat(format string)`
+```bash
+cd examples/basic
+go run main.go
+```
 
 ## License
 
