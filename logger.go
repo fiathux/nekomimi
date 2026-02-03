@@ -1,16 +1,20 @@
-// Package nekomimi provides a very light-weight and simple logging module for golang
+// Package nekomimi provides a very light-weight and simple logging module for
+// golang
 package nekomimi
 
 import (
 	"fmt"
-	"io"
-	"log"
-	"os"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // LogLevel represents the severity level of a log message
-type LogLevel int
+type LogLevel uint32
 
 const (
 	// DEBUG level for detailed debugging information
@@ -21,6 +25,10 @@ const (
 	WARN
 	// ERROR level for error messages
 	ERROR
+	// pANIC level for critical error messages
+	pANIC
+	// fATAL level for fatal error messages
+	fATAL
 )
 
 // String returns the string representation of the log level
@@ -34,133 +42,539 @@ func (l LogLevel) String() string {
 		return "WARN"
 	case ERROR:
 		return "ERROR"
+	case pANIC:
+		return "PANIC"
+	case fATAL:
+		return "FATAL"
 	default:
 		return "UNKNOWN"
 	}
 }
 
-// Logger represents a simple logger instance
-type Logger struct {
+// BaiscLogger defines the basic logging methods for different log levels
+// following log levels are supported:
+//   - Dbg: Debug level logging
+//   - Inf: Info level logging
+//   - War: Warning level logging
+//   - Err: Error level logging
+//
+// each level supports three types of logging methods:
+//   - Simple message logging: e.g., Dbg(message ...any)
+//   - Formatted message logging: e.g., Dbgf(format string, args ...any)
+//   - Deferred message logging: e.g., DbgP() func(message ...any)
+//
+// the Simple type is the fastest, and Deferred is useful for expensive log
+// message construction. the Deferred type might return nil if the log level is
+// not enabled.
+type BaiscLogger interface {
+	// Debug level - simple output
+	Dbg(message ...any)
+	// Debug level - formatted output
+	Dbgf(format string, args ...any)
+	// Debug level - deferred output
+	DbgP() func(message ...any)
+	// Info level logging
+	Inf(message ...any)
+	// Info level - formatted output
+	Inff(format string, args ...any)
+	// Info level - deferred output
+	InfP() func(message ...any)
+	// Warning level logging
+	War(message ...any)
+	// Warning level - formatted output
+	Warf(format string, args ...any)
+	// Warning level - deferred output
+	WarP() func(message ...any)
+	// Error level logging
+	Err(message ...any)
+	// Error level - formatted output
+	Errf(format string, args ...any)
+	// Error level - deferred output
+	ErrP() func(message ...any)
+}
+
+// TraceLogger extends BaiscLogger with tracing capabilities
+type TraceLogger interface {
+	BaiscLogger
+
+	// Retrieve the Trace ID
+	TraceID() string
+	// Retrieve the Trace Name
+	TraceName() string
+}
+
+// Logger is the full-featured logger interface
+type Logger interface {
+	BaiscLogger
+	// Panic level logging
+	Panic(message ...any)
+	Panicf(format string, args ...any)
+	// Fatal level logging
+	Fatal(message ...any)
+	Fatalf(format string, args ...any)
+	// Create a new TraceLogger with the given name
+	Trace(name string) TraceLogger
+	// Derive a new Logger with the given prefix name
+	Derive(pfx string) Logger
+	// Set log level
+	SetLevel(level LogLevel)
+	// Set log level that includes call trace information
+	SetCallTraceLevel(level LogLevel)
+	// Set the time format for log messages
+	SetTimeFormat(format string)
+	// Set the log handler
+	SetLogHandler(handler LogHandler)
+	// Replace the current log handler with a wrapped function.
+	// if the wrapper returns nil, the log handler will be reset to the default
+	// handler (NativeLogHandler).
+	WrapLogHandler(wrapper func(old LogHandler) LogHandler)
+}
+
+// LogConfig provides configuration options for the logger
+type LogConfig struct {
+	Handler        LogHandler
+	Level          LogLevel
+	LevelWithTrace LogLevel
+	TimeFormat     string
+}
+
+// traceID represents a trace identifier with a name and ID
+type traceID struct {
+	name string
+	id   string
+}
+
+// logger implements the Logger interface
+type logger struct {
+	mtx        sync.RWMutex
+	logHandler LogHandler
 	level      LogLevel
-	output     io.Writer
+	levelct    LogLevel
 	prefix     string
-	timeFormat string
+	timefmt    string
+	fmtHeader  func(level LogLevel, tid *traceID) string
 }
 
-// New creates a new Logger instance with default settings
-func New() *Logger {
-	return &Logger{
-		level:      INFO,
-		output:     os.Stdout,
-		prefix:     "",
-		timeFormat: "2006-01-02 15:04:05",
+// traceLogger implements the TraceLogger interface
+type traceLogger struct {
+	parent *logger
+	tid    traceID
+}
+
+// newTraceID generates a new traceID with the given name
+func newTraceID(name string) traceID {
+	id, _ := uuid.NewV7()
+	return traceID{
+		name: name,
+		id:   id.String(),
 	}
 }
 
-// SetLevel sets the minimum log level
-func (l *Logger) SetLevel(level LogLevel) {
-	l.level = level
-}
-
-// SetOutput sets the output destination
-func (l *Logger) SetOutput(w io.Writer) {
-	l.output = w
-}
-
-// SetPrefix sets the prefix for log messages
-func (l *Logger) SetPrefix(prefix string) {
-	l.prefix = prefix
-}
-
-// SetTimeFormat sets the time format for log messages
-func (l *Logger) SetTimeFormat(format string) {
-	l.timeFormat = format
-}
-
-// log is the internal logging function
-func (l *Logger) log(level LogLevel, format string, args ...interface{}) {
-	if level < l.level {
-		return
+// getStackHeader retrieves the caller information for logging
+func getStackHeader(skip int) string {
+	pc, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return "unknown:0 "
 	}
-
-	timestamp := time.Now().Format(l.timeFormat)
-	message := fmt.Sprintf(format, args...)
-	
-	var logLine string
-	if l.prefix != "" {
-		logLine = fmt.Sprintf("[%s] [%s] [%s] %s\n", timestamp, level.String(), l.prefix, message)
-	} else {
-		logLine = fmt.Sprintf("[%s] [%s] %s\n", timestamp, level.String(), message)
+	fn := runtime.FuncForPC(pc)
+	// split base file name
+	basefile := file
+	if idx := strings.LastIndex(file, "/"); idx != -1 {
+		basefile = file[idx+1:]
 	}
-
-	l.output.Write([]byte(logLine))
+	// split base function name (without package path)
+	fnName := fn.Name()
+	if idx := strings.LastIndex(fnName, "/"); idx != -1 {
+		fnName = fnName[idx+1:]
+	}
+	return fmt.Sprintf(" %s:%d(%s)", basefile, line, fnName)
 }
 
-// Debug logs a debug message
-func (l *Logger) Debug(format string, args ...interface{}) {
-	l.log(DEBUG, format, args...)
+// formatStack formats the current call stack for logging
+func formatStack(skip int) string {
+	pc := make([]uintptr, 10)
+	n := runtime.Callers(skip, pc)
+	frames := runtime.CallersFrames(pc[:n])
+
+	stack := make([]string, 0, n)
+	for {
+		frame, more := frames.Next()
+		stack = append(stack,
+			fmt.Sprintf(" %s:%d(%s)", frame.File, frame.Line, frame.Function))
+		if !more {
+			break
+		}
+	}
+	return fmt.Sprintf(" >> Stacks:\n    %s\n<<<<", strings.Join(stack, "\n    "))
 }
 
-// Info logs an info message
-func (l *Logger) Info(format string, args ...interface{}) {
-	l.log(INFO, format, args...)
+// String returns the string representation of the traceID
+func (tid *traceID) String() string {
+	if tid == nil {
+		return ""
+	}
+	if tid.name != "" {
+		return fmt.Sprintf("<%s:%s>", tid.name, tid.id)
+	}
+	return fmt.Sprintf("<%s>", tid.id)
 }
 
-// Warn logs a warning message
-func (l *Logger) Warn(format string, args ...interface{}) {
-	l.log(WARN, format, args...)
+// getHeaderFromatter constructs the log message header
+func getHeaderFromatter(
+	timefmt string,
+	prefix string,
+	levelcalltrace LogLevel,
+	tbskip int,
+) func(level LogLevel, tid *traceID) string {
+	return func(level LogLevel, tid *traceID) string {
+		calltrace := level >= levelcalltrace
+		stackInfo := ""
+		if level >= pANIC {
+			stackInfo = formatStack(tbskip + 1)
+		} else if calltrace {
+			stackInfo = getStackHeader(tbskip)
+		}
+		timestr := time.Now().Format(timefmt)
+		// FORMAT: time [level], perfix<trace> calltrace -
+		return fmt.Sprintf("%s [%s], %s%s%s - ",
+			timestr,
+			level.String(),
+			prefix,
+			tid.String(),
+			stackInfo,
+		)
+	}
 }
 
-// Error logs an error message
-func (l *Logger) Error(format string, args ...interface{}) {
-	l.log(ERROR, format, args...)
+// New creates a new Logger instance with the given name and configuration
+func New(name string, config LogConfig) Logger {
+	timefmt := config.TimeFormat
+	if timefmt == "" {
+		timefmt = "2006-01-02 15:04:05.000"
+	}
+	hander := config.Handler
+	if hander == nil {
+		hander = NativeLogHandler
+	}
+	if name == "" {
+		name = "*"
+	}
+	return &logger{
+		logHandler: hander,
+		level:      config.Level,
+		prefix:     name,
+		timefmt:    timefmt,
+		fmtHeader: getHeaderFromatter(
+			timefmt,
+			name,
+			config.LevelWithTrace,
+			4,
+		),
+	}
 }
 
-// Default logger instance
-var defaultLogger = New()
-
-// Debug logs a debug message using the default logger
-func Debug(format string, args ...interface{}) {
-	defaultLogger.Debug(format, args...)
+// getFmtHeader safely retrieves the fmtHeader function
+func (l *logger) getFmtHeader() func(level LogLevel, tid *traceID) string {
+	l.mtx.RLock()
+	defer l.mtx.RUnlock()
+	return l.fmtHeader
 }
 
-// Info logs an info message using the default logger
-func Info(format string, args ...interface{}) {
-	defaultLogger.Info(format, args...)
+// outputRegularLog outputs a regular log message
+func (l *logger) outputRegularLog(level LogLevel, message ...any) {
+	header := l.getFmtHeader()(level, nil)
+	l.logHandler.RegularLog(level, header, message...)
 }
 
-// Warn logs a warning message using the default logger
-func Warn(format string, args ...interface{}) {
-	defaultLogger.Warn(format, args...)
+// outputPanicLog outputs a panic log message
+func (l *logger) outputPanicLog(message ...any) {
+	header := l.getFmtHeader()(pANIC, nil)
+	l.logHandler.PanicLog(header, message...)
 }
 
-// Error logs an error message using the default logger
-func Error(format string, args ...interface{}) {
-	defaultLogger.Error(format, args...)
+// outputFatalLog outputs a fatal log message
+func (l *logger) outputFatalLog(message ...any) {
+	header := l.getFmtHeader()(fATAL, nil)
+	l.logHandler.FatalLog(header, message...)
 }
 
-// SetLevel sets the minimum log level for the default logger
-func SetLevel(level LogLevel) {
-	defaultLogger.SetLevel(level)
+// ------- implement BaiscLogger interface for logger -------
+
+func (l *logger) Dbg(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(DEBUG) {
+		l.outputRegularLog(DEBUG, message...)
+	}
 }
 
-// SetOutput sets the output destination for the default logger
-func SetOutput(w io.Writer) {
-	defaultLogger.SetOutput(w)
+func (l *logger) Dbgf(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(DEBUG) {
+		l.outputRegularLog(DEBUG, fmt.Sprintf(format, args...))
+	}
 }
 
-// SetPrefix sets the prefix for the default logger
-func SetPrefix(prefix string) {
-	defaultLogger.SetPrefix(prefix)
+func (l *logger) DbgP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(DEBUG) {
+		return func(message ...any) {
+			l.outputRegularLog(DEBUG, message...)
+		}
+	}
+	return nil
 }
 
-// SetTimeFormat sets the time format for the default logger
-func SetTimeFormat(format string) {
-	defaultLogger.SetTimeFormat(format)
+func (l *logger) Inf(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(INFO) {
+		l.outputRegularLog(INFO, message...)
+	}
 }
 
-// Fatal logs an error message and exits the program
-func Fatal(format string, args ...interface{}) {
-	defaultLogger.Error(format, args...)
-	log.Fatal()
+func (l *logger) Inff(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(INFO) {
+		l.outputRegularLog(INFO, fmt.Sprintf(format, args...))
+	}
 }
+
+func (l *logger) InfP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(INFO) {
+		return func(message ...any) {
+			l.outputRegularLog(INFO, message...)
+		}
+	}
+	return nil
+}
+
+func (l *logger) War(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(WARN) {
+		l.outputRegularLog(WARN, message...)
+	}
+}
+
+func (l *logger) Warf(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(WARN) {
+		l.outputRegularLog(WARN, fmt.Sprintf(format, args...))
+	}
+}
+
+func (l *logger) WarP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(WARN) {
+		return func(message ...any) {
+			l.outputRegularLog(WARN, message...)
+		}
+	}
+	return nil
+}
+
+func (l *logger) Err(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(ERROR) {
+		l.outputRegularLog(ERROR, message...)
+	}
+}
+
+func (l *logger) Errf(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(ERROR) {
+		l.outputRegularLog(ERROR, fmt.Sprintf(format, args...))
+	}
+}
+
+func (l *logger) ErrP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(ERROR) {
+		return func(message ...any) {
+			l.outputRegularLog(ERROR, message...)
+		}
+	}
+	return nil
+}
+
+// --------------------------------------------------------------
+
+// ------- implement Logger interface for logger -------
+
+func (l *logger) Panic(message ...any) {
+	l.outputPanicLog(message...)
+}
+
+func (l *logger) Panicf(format string, args ...any) {
+	l.outputPanicLog(fmt.Sprintf(format, args...))
+}
+
+func (l *logger) Fatal(message ...any) {
+	l.outputFatalLog(message...)
+}
+
+func (l *logger) Fatalf(format string, args ...any) {
+	l.outputFatalLog(fmt.Sprintf(format, args...))
+}
+
+func (l *logger) Trace(name string) TraceLogger {
+	tid := newTraceID(name)
+	return &traceLogger{
+		parent: l,
+		tid:    tid,
+	}
+}
+
+func (l *logger) Derive(pfx string) Logger {
+	l.mtx.RLock()
+	defer l.mtx.RUnlock()
+	newPrefix := l.prefix
+	if pfx != "" {
+		newPrefix = newPrefix + "." + pfx
+	}
+	return &logger{
+		logHandler: l.logHandler,
+		level:      l.level,
+		prefix:     newPrefix,
+		timefmt:    l.timefmt,
+		fmtHeader: getHeaderFromatter(
+			l.timefmt,
+			newPrefix,
+			l.levelct,
+			4,
+		),
+	}
+}
+
+func (l *logger) SetLevel(level LogLevel) {
+	atomic.StoreUint32((*uint32)(&l.level), uint32(level))
+}
+
+func (l *logger) SetCallTraceLevel(level LogLevel) {
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+	l.levelct = level
+	l.fmtHeader = getHeaderFromatter(
+		l.timefmt,
+		l.prefix,
+		l.levelct,
+		4,
+	)
+}
+
+func (l *logger) SetTimeFormat(format string) {
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+	l.timefmt = format
+	l.fmtHeader = getHeaderFromatter(
+		l.timefmt,
+		l.prefix,
+		l.levelct,
+		4,
+	)
+}
+
+func (l *logger) SetLogHandler(handler LogHandler) {
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+	l.logHandler = handler
+}
+
+func (l *logger) WrapLogHandler(wrapper func(old LogHandler) LogHandler) {
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+	l.logHandler = wrapper(l.logHandler)
+	if l.logHandler == nil {
+		l.logHandler = NativeLogHandler
+	}
+}
+
+// --------------------------------------------------------------
+
+// ------- implement TraceLogger interface for traceLogger -------
+
+func (tl *traceLogger) regularLog(level LogLevel, message ...any) {
+	header := tl.parent.getFmtHeader()(level, &tl.tid)
+	tl.parent.logHandler.RegularLog(level, header, message...)
+}
+
+func (tl *traceLogger) Dbg(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(DEBUG) {
+		tl.regularLog(DEBUG, message...)
+	}
+}
+
+func (tl *traceLogger) Dbgf(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(DEBUG) {
+		tl.regularLog(DEBUG, fmt.Sprintf(format, args...))
+	}
+}
+
+func (tl *traceLogger) DbgP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(DEBUG) {
+		return func(message ...any) {
+			tl.regularLog(DEBUG, message...)
+		}
+	}
+	return nil
+}
+
+func (tl *traceLogger) Inf(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(INFO) {
+		tl.regularLog(INFO, message...)
+	}
+}
+
+func (tl *traceLogger) Inff(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(INFO) {
+		tl.regularLog(INFO, fmt.Sprintf(format, args...))
+	}
+}
+
+func (tl *traceLogger) InfP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(INFO) {
+		return func(message ...any) {
+			tl.regularLog(INFO, message...)
+		}
+	}
+	return nil
+}
+
+func (tl *traceLogger) War(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(WARN) {
+		tl.regularLog(WARN, message...)
+	}
+}
+
+func (tl *traceLogger) Warf(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(WARN) {
+		tl.regularLog(WARN, fmt.Sprintf(format, args...))
+	}
+}
+
+func (tl *traceLogger) WarP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(WARN) {
+		return func(message ...any) {
+			tl.regularLog(WARN, message...)
+		}
+	}
+	return nil
+}
+
+func (tl *traceLogger) Err(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(ERROR) {
+		tl.regularLog(ERROR, message...)
+	}
+}
+
+func (tl *traceLogger) Errf(format string, args ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(ERROR) {
+		tl.regularLog(ERROR, fmt.Sprintf(format, args...))
+	}
+}
+
+func (tl *traceLogger) ErrP() func(message ...any) {
+	if atomic.LoadUint32((*uint32)(&tl.parent.level)) <= uint32(ERROR) {
+		return func(message ...any) {
+			tl.regularLog(ERROR, message...)
+		}
+	}
+	return nil
+}
+
+func (tl *traceLogger) TraceID() string {
+	return tl.tid.id
+}
+
+func (tl *traceLogger) TraceName() string {
+	return tl.tid.name
+}
+
+// --------------------------------------------------------------
