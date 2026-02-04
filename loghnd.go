@@ -10,12 +10,12 @@ import (
 	"time"
 )
 
-// sysTeminateCode is the exit code used when FatalLog is called
-const sysTeminateCode = 1
+// sysTerminateCode is the exit code used when FatalLog is called
+const sysTerminateCode = 1
 
 // sysTerminate is the function called to terminate the program
 var sysTerminate = func() {
-	os.Exit(sysTeminateCode)
+	os.Exit(sysTerminateCode)
 }
 
 // LogHandler represents the interface for handling log messages
@@ -62,7 +62,7 @@ type LogHandlerFunc struct {
 	// terminate the program
 	FatalLogFunc func(func(io.StringWriter)) (fin func())
 	// optional wrapper LogHandler to chain calls
-	Warpper LogHandler
+	Wrapper LogHandler
 }
 
 // TinyLogHandlerFunc is a minimal implementation of LogHandler using a single
@@ -86,7 +86,7 @@ func NewNativeLogHandler(warp LogHandler) LogHandler {
 			pnt(os.Stderr)
 			return sysTerminate
 		},
-		Warpper: warp,
+		Wrapper: warp,
 	}
 }
 
@@ -94,7 +94,7 @@ func NewNativeLogHandler(warp LogHandler) LogHandler {
 var NativeLogHandler LogHandler = NewNativeLogHandler(nil)
 
 // NewFileAccessorLogHandler creates a new LogHandler that writes logs to a
-// file. it's a very basic implementation and designed for warpping around
+// file. it's a very basic implementation and designed for wrapping around
 // other LogHandlers.
 // This handler is not thread-safe by itself. Should ensure parent handler
 // have thread-safety if needed.
@@ -189,8 +189,8 @@ func (lh *LogHandlerFunc) RegularWriter(
 		lh.Lock.Lock()
 		defer lh.Lock.Unlock()
 	}
-	if lh.Warpper != nil {
-		lh.Warpper.RegularWriter(level, pnt)
+	if lh.Wrapper != nil {
+		lh.Wrapper.RegularWriter(level, pnt)
 	}
 	if lh.RegularLogFunc != nil {
 		lh.RegularLogFunc(level, pnt)
@@ -205,8 +205,8 @@ func (lh *LogHandlerFunc) RegularLog(
 		defer lh.Lock.Unlock()
 	}
 	pnt := lh.writeLogFunc(header, message...)
-	if lh.Warpper != nil {
-		lh.Warpper.RegularWriter(level, pnt)
+	if lh.Wrapper != nil {
+		lh.Wrapper.RegularWriter(level, pnt)
 	}
 	if lh.RegularLogFunc != nil {
 		lh.RegularLogFunc(level, pnt)
@@ -220,8 +220,8 @@ func (lh *LogHandlerFunc) PanicLog(header string, message ...any) {
 			defer lh.Lock.Unlock()
 		}
 		pnt := lh.writeLogFunc(header, message...)
-		if lh.Warpper != nil {
-			lh.Warpper.RegularWriter(pANIC, pnt)
+		if lh.Wrapper != nil {
+			lh.Wrapper.RegularWriter(PANIC, pnt)
 		}
 		if lh.PanicLogFunc != nil {
 			return lh.PanicLogFunc(pnt, fmt.Sprintln(message...))
@@ -240,8 +240,8 @@ func (lh *LogHandlerFunc) FatalLog(header string, message ...any) {
 			defer lh.Lock.Unlock()
 		}
 		pnt := lh.writeLogFunc(header, message...)
-		if lh.Warpper != nil {
-			lh.Warpper.RegularWriter(fATAL, pnt)
+		if lh.Wrapper != nil {
+			lh.Wrapper.RegularWriter(FATAL, pnt)
 		}
 		if lh.FatalLogFunc != nil {
 			return lh.FatalLogFunc(pnt)
@@ -282,12 +282,12 @@ func (lf TinyLogHandlerFunc) RegularLog(
 
 func (lf TinyLogHandlerFunc) PanicLog(header string, message ...any) {
 	pnt := lf.writeLogFunc(header, message...)
-	lf(pANIC, pnt)
+	lf(PANIC, pnt)
 }
 
 func (lf TinyLogHandlerFunc) FatalLog(header string, message ...any) {
 	pnt := lf.writeLogFunc(header, message...)
-	lf(fATAL, pnt)
+	lf(FATAL, pnt)
 }
 
 // --------------------------------------------------------------

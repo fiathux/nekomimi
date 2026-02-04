@@ -25,10 +25,10 @@ const (
 	WARN
 	// ERROR level for error messages
 	ERROR
-	// pANIC level for critical error messages
-	pANIC
-	// fATAL level for fatal error messages
-	fATAL
+	// PANIC level for critical error messages
+	PANIC
+	// FATAL level for fatal error messages
+	FATAL
 )
 
 // String returns the string representation of the log level
@@ -42,16 +42,16 @@ func (l LogLevel) String() string {
 		return "WARN"
 	case ERROR:
 		return "ERROR"
-	case pANIC:
+	case PANIC:
 		return "PANIC"
-	case fATAL:
+	case FATAL:
 		return "FATAL"
 	default:
 		return "UNKNOWN"
 	}
 }
 
-// BaiscLogger defines the basic logging methods for different log levels
+// BasicLogger defines the basic logging methods for different log levels
 // following log levels are supported:
 //   - Dbg: Debug level logging
 //   - Inf: Info level logging
@@ -66,7 +66,7 @@ func (l LogLevel) String() string {
 // the Simple type is the fastest, and Deferred is useful for expensive log
 // message construction. the Deferred type might return nil if the log level is
 // not enabled.
-type BaiscLogger interface {
+type BasicLogger interface {
 	// Debug level - simple output
 	Dbg(message ...any)
 	// Debug level - formatted output
@@ -93,9 +93,9 @@ type BaiscLogger interface {
 	ErrP() func(message ...any)
 }
 
-// TraceLogger extends BaiscLogger with tracing capabilities
+// TraceLogger extends BasicLogger with tracing capabilities
 type TraceLogger interface {
-	BaiscLogger
+	BasicLogger
 
 	// Retrieve the Trace ID
 	TraceID() string
@@ -105,7 +105,7 @@ type TraceLogger interface {
 
 // Logger is the full-featured logger interface
 type Logger interface {
-	BaiscLogger
+	BasicLogger
 	// Panic level logging
 	Panic(message ...any)
 	Panicf(format string, args ...any)
@@ -219,8 +219,8 @@ func (tid *traceID) String() string {
 	return fmt.Sprintf("<%s>", tid.id)
 }
 
-// getHeaderFromatter constructs the log message header
-func getHeaderFromatter(
+// getHeaderFormatter constructs the log message header
+func getHeaderFormatter(
 	timefmt string,
 	prefix string,
 	levelcalltrace LogLevel,
@@ -229,7 +229,7 @@ func getHeaderFromatter(
 	return func(level LogLevel, tid *traceID) string {
 		calltrace := level >= levelcalltrace
 		stackInfo := ""
-		if level >= pANIC {
+		if level >= PANIC {
 			stackInfo = formatStack(tbskip + 1)
 		} else if calltrace {
 			stackInfo = getStackHeader(tbskip)
@@ -264,7 +264,7 @@ func New(name string, config LogConfig) Logger {
 		level:      config.Level,
 		prefix:     name,
 		timefmt:    timefmt,
-		fmtHeader: getHeaderFromatter(
+		fmtHeader: getHeaderFormatter(
 			timefmt,
 			name,
 			config.LevelWithTrace,
@@ -288,17 +288,17 @@ func (l *logger) outputRegularLog(level LogLevel, message ...any) {
 
 // outputPanicLog outputs a panic log message
 func (l *logger) outputPanicLog(message ...any) {
-	header := l.getFmtHeader()(pANIC, nil)
+	header := l.getFmtHeader()(PANIC, nil)
 	l.logHandler.PanicLog(header, message...)
 }
 
 // outputFatalLog outputs a fatal log message
 func (l *logger) outputFatalLog(message ...any) {
-	header := l.getFmtHeader()(fATAL, nil)
+	header := l.getFmtHeader()(FATAL, nil)
 	l.logHandler.FatalLog(header, message...)
 }
 
-// ------- implement BaiscLogger interface for logger -------
+// ------- implement BasicLogger interface for logger -------
 
 func (l *logger) Dbg(message ...any) {
 	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(DEBUG) {
@@ -424,7 +424,7 @@ func (l *logger) Derive(pfx string) Logger {
 		level:      l.level,
 		prefix:     newPrefix,
 		timefmt:    l.timefmt,
-		fmtHeader: getHeaderFromatter(
+		fmtHeader: getHeaderFormatter(
 			l.timefmt,
 			newPrefix,
 			l.levelct,
@@ -441,7 +441,7 @@ func (l *logger) SetCallTraceLevel(level LogLevel) {
 	l.mtx.Lock()
 	defer l.mtx.Unlock()
 	l.levelct = level
-	l.fmtHeader = getHeaderFromatter(
+	l.fmtHeader = getHeaderFormatter(
 		l.timefmt,
 		l.prefix,
 		l.levelct,
@@ -453,7 +453,7 @@ func (l *logger) SetTimeFormat(format string) {
 	l.mtx.Lock()
 	defer l.mtx.Unlock()
 	l.timefmt = format
-	l.fmtHeader = getHeaderFromatter(
+	l.fmtHeader = getHeaderFormatter(
 		l.timefmt,
 		l.prefix,
 		l.levelct,

@@ -68,7 +68,7 @@ func TestLogger(t *testing.T) {
 			tlh.fullmsg = sb.String()
 			return nil
 		},
-		Warpper: &LogHandlerFunc{
+		Wrapper: &LogHandlerFunc{
 			RegularLogFunc: func(level LogLevel, pnt func(io.StringWriter)) {
 				tlh.wrpcalled = true
 			},
@@ -80,7 +80,7 @@ func TestLogger(t *testing.T) {
 				tlh.wrpspcalled = true
 				return nil
 			},
-			Warpper: TinyLogHandlerFunc(
+			Wrapper: TinyLogHandlerFunc(
 				func(level LogLevel, pnt func(io.StringWriter)) {
 					tlh.tinyCalled = true
 				}),
@@ -222,8 +222,8 @@ func TestLogger(t *testing.T) {
 			So(len(tlh.logs), ShouldEqual, 3)
 			So(tlh.h[13:], ShouldEqual, "[DEBUG], TestPrefix - ")
 			So(tlh.fullmsg, ShouldContainSubstring, "a b C")
-			So(tlh.wrpcalled, ShouldBeTrue)  // warpper should be called
-			So(tlh.tinyCalled, ShouldBeTrue) // tiny warpper should be called
+			So(tlh.wrpcalled, ShouldBeTrue)  // wrapper should be called
+			So(tlh.tinyCalled, ShouldBeTrue) // tiny wrapper should be called
 			tlh.clean()
 			l.Inf("info message", 123)
 			So(len(tlh.logs), ShouldEqual, 2)
@@ -248,7 +248,7 @@ func TestLogger(t *testing.T) {
 			So(tlh.panicCalled, ShouldBeTrue)
 			So(tlh.h[13:33], ShouldEqual, "[PANIC], TestPrefix ")
 			So(tlh.h[33:], ShouldStartWith, ">> Stacks:\n")
-			So(tlh.tinyCalled, ShouldBeTrue) // tiny warpper should be called
+			So(tlh.tinyCalled, ShouldBeTrue) // tiny wrapper should be called
 			So(tlh.fullmsg, ShouldContainSubstring, "panic message")
 			So(tlh.pncmsg, ShouldContainSubstring, "panic message")
 			tlh.clean()
@@ -258,9 +258,9 @@ func TestLogger(t *testing.T) {
 			So(tlh.h[13:33], ShouldEqual, "[FATAL], TestPrefix ")
 			So(tlh.h[33:], ShouldStartWith, ">> Stacks:\n")
 			So(tlh.fullmsg, ShouldContainSubstring, "fatal message")
-			// should not call Panic/Fatal on warpper
+			// should not call Panic/Fatal on wrapper
 			So(tlh.wrpspcalled, ShouldBeFalse)
-			// should call regular log on warpper
+			// should call regular log on wrapper
 			So(tlh.wrpcalled, ShouldBeTrue)
 			tlh.clean()
 			// Trace log
@@ -312,7 +312,7 @@ func TestLogger(t *testing.T) {
 
 		// TinyLogHandlerFunc test
 		Convey("TinyLogHandlerFunc test", func() {
-			status := [fATAL + 1]bool{}
+			status := [FATAL + 1]bool{}
 			cnt := ""
 			tlhTiny := TinyLogHandlerFunc(func(level LogLevel, pnt func(io.StringWriter)) {
 				status[level] = true
@@ -339,8 +339,8 @@ func TestLogger(t *testing.T) {
 			So(status[INFO], ShouldBeTrue)
 			So(status[WARN], ShouldBeTrue)
 			So(status[ERROR], ShouldBeTrue)
-			So(status[pANIC], ShouldBeTrue)
-			So(status[fATAL], ShouldBeTrue)
+			So(status[PANIC], ShouldBeTrue)
+			So(status[FATAL], ShouldBeTrue)
 		})
 
 		Convey("FileLogHandler test", func() {
@@ -353,7 +353,7 @@ func TestLogger(t *testing.T) {
 			So(fh, ShouldNotBeNil)
 			l := New("", LogConfig{
 				Handler: &LogHandlerFunc{
-					Warpper: fh,
+					Wrapper: fh,
 				},
 			})
 			// write logs

@@ -204,7 +204,7 @@ func handlerCompositionExample() {
 			fmt.Print("[CUSTOM PREFIX] ")
 			pnt(os.Stdout)
 		},
-		Warpper: fileHandler, // Chain to file handler
+		Wrapper: fileHandler, // Chain to file handler
 	}
 
 	logger := nekomimi.New("ComposedApp", nekomimi.LogConfig{
