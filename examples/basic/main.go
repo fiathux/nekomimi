@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/fiathux/nekomimi"
@@ -23,8 +25,14 @@ func main() {
 	// Example 5: Derived loggers
 	derivedExample()
 
-	// Example 6: Custom log handler
+	// Example 6: Custom log handler (legacy approach)
 	customHandlerExample()
+
+	// Example 7: File logging with built-in handler
+	fileLoggingExample()
+
+	// Example 8: Handler composition
+	handlerCompositionExample()
 }
 
 // basicExample demonstrates basic logger usage
@@ -124,35 +132,88 @@ func derivedExample() {
 	dbLogger.War("Database slow query detected")
 }
 
-// customHandlerExample demonstrates using a custom log handler
+// customHandlerExample demonstrates using a custom log handler (legacy approach)
 func customHandlerExample() {
-	println("\n=== Custom Log Handler Example ===")
+	println("\n=== Custom Log Handler Example (Legacy) ===")
 
-	// Create a custom log handler that writes to a file
-	file, err := os.Create("/tmp/app.log")
-	if err != nil {
-		println("Failed to create log file:", err.Error())
-		return
-	}
-	defer file.Close()
-
+	// Create a custom log handler using the old-style function signature
 	customHandler := &nekomimi.LogHandlerFunc{
-		RegularLogFunc: func(level nekomimi.LogLevel, header string, message ...any) {
-			// Write to file
-			file.WriteString(header)
-			file.WriteString(fmt.Sprintln(message...))
-			// Also print to stdout for demo purposes
-			fmt.Print(header)
-			fmt.Println(message...)
+		RegularLogFunc: func(level nekomimi.LogLevel, pnt func(io.StringWriter)) {
+			// Write to stdout
+			pnt(os.Stdout)
 		},
 	}
 
-	logger := nekomimi.New("FileLogger", nekomimi.LogConfig{
+	logger := nekomimi.New("CustomLogger", nekomimi.LogConfig{
 		Handler: customHandler,
 		Level:   nekomimi.INFO,
 	})
 
-	logger.Inf("This message goes to the file")
-	logger.War("Warning logged to file")
-	println("Check /tmp/app.log for the log output")
+	logger.Inf("This message uses a custom handler")
+	logger.War("Warning with custom handler")
+}
+
+// fileLoggingExample demonstrates using the built-in file handler
+func fileLoggingExample() {
+	println("\n=== File Logging Example ===")
+
+	// Create a context for file lifecycle management
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a file handler that writes to a log file
+	fileHandler, err := nekomimi.NewFileAccessorLogHandler(ctx, "/tmp/nekomimi-app.log")
+	if err != nil {
+		println("Failed to create file handler:", err.Error())
+		return
+	}
+
+	// Wrap the file handler with the native handler for dual output
+	logger := nekomimi.New("FileApp", nekomimi.LogConfig{
+		Handler: nekomimi.NewNativeLogHandler(fileHandler),
+		Level:   nekomimi.DEBUG,
+	})
+
+	logger.Inf("This message goes to both console and file")
+	logger.Dbg("Debug message logged to file")
+	logger.War("Warning message with dual output")
+
+	println("Log file created at /tmp/nekomimi-app.log")
+	println("The file is automatically flushed every 2 seconds")
+}
+
+// handlerCompositionExample demonstrates handler chaining and composition
+func handlerCompositionExample() {
+	println("\n=== Handler Composition Example ===")
+
+	// Create a context for file lifecycle management
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create file handler
+	fileHandler, err := nekomimi.NewFileAccessorLogHandler(ctx, "/tmp/nekomimi-composed.log")
+	if err != nil {
+		println("Failed to create file handler:", err.Error())
+		return
+	}
+
+	// Create a custom handler that adds prefix and chains to file handler
+	prefixHandler := &nekomimi.LogHandlerFunc{
+		RegularLogFunc: func(level nekomimi.LogLevel, pnt func(io.StringWriter)) {
+			// Add custom prefix to console output
+			fmt.Print("[CUSTOM PREFIX] ")
+			pnt(os.Stdout)
+		},
+		Warpper: fileHandler, // Chain to file handler
+	}
+
+	logger := nekomimi.New("ComposedApp", nekomimi.LogConfig{
+		Handler: prefixHandler,
+		Level:   nekomimi.INFO,
+	})
+
+	logger.Inf("This message goes through the composed handler chain")
+	logger.War("Warning message with custom prefix and file logging")
+
+	println("Logs are written to console with prefix AND to /tmp/nekomimi-composed.log")
 }
