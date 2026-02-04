@@ -189,7 +189,7 @@ customHandler := &nekomimi.LogHandlerFunc{
 		// Add custom processing here
 		pnt(os.Stdout)
 	},
-	Warpper: fileHandler, // Chain to file handler
+	Wrapper: fileHandler, // Chain to file handler
 }
 
 logger := nekomimi.New("ComposedLogger", nekomimi.LogConfig{
@@ -289,7 +289,7 @@ type LogHandlerFunc struct {
 	RegularLogFunc func(...)     // Regular log function
 	PanicLogFunc   func(...) func() // Panic log with finalizer
 	FatalLogFunc   func(...) func() // Fatal log with finalizer
-	Warpper        LogHandler    // Optional chained handler
+	Wrapper        LogHandler    // Optional chained handler
 }
 ```
 
@@ -315,7 +315,7 @@ const (
 
 ```go
 type Logger interface {
-	BaiscLogger
+	BasicLogger
 	
 	// Panic/Fatal logging
 	Panic(message ...any)
@@ -341,7 +341,7 @@ type Logger interface {
 ### BaiscLogger Interface
 
 ```go
-type BaiscLogger interface {
+type BasicLogger interface {
 	// Debug level
 	Dbg(message ...any)
 	Dbgf(format string, args ...any)
@@ -368,7 +368,7 @@ type BaiscLogger interface {
 
 ```go
 type TraceLogger interface {
-	BaiscLogger
+	BasicLogger
 	
 	// Get trace information
 	TraceID() string
