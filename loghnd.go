@@ -70,7 +70,7 @@ type LogHandlerFunc struct {
 type TinyLogHandlerFunc func(level LogLevel, pnt func(io.StringWriter))
 
 // NewNativeLogHandler creates a new LogHandler that uses std I/O for logging
-func NewNativeLogHandler(warp LogHandler) LogHandler {
+func NewNativeLogHandler(wrap LogHandler) LogHandler {
 	return &LogHandlerFunc{
 		Lock: &sync.Mutex{},
 		RegularLogFunc: func(level LogLevel, pnt func(io.StringWriter)) {
@@ -86,7 +86,7 @@ func NewNativeLogHandler(warp LogHandler) LogHandler {
 			pnt(os.Stderr)
 			return sysTerminate
 		},
-		Wrapper: warp,
+		Wrapper: wrap,
 	}
 }
 
