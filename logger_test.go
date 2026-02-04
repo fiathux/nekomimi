@@ -1,7 +1,13 @@
 package nekomimi
 
 import (
+	"context"
+	"io"
+	"os"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -9,8 +15,11 @@ import (
 type testLogHandler struct {
 	logs        []any
 	h           string
+	fullmsg     string
+	pncmsg      string
 	panicCalled bool
 	fatalCalled bool
+	tinyCalled  bool
 	hnd         *LogHandlerFunc
 	wrpcalled   bool
 	wrpspcalled bool
@@ -18,42 +27,68 @@ type testLogHandler struct {
 
 func (tlh *testLogHandler) clean() {
 	tlh.logs = []any{}
+	tlh.fullmsg = ""
+	tlh.pncmsg = ""
 	tlh.h = ""
 	tlh.panicCalled = false
 	tlh.fatalCalled = false
+	tlh.tinyCalled = false
 }
 
 func TestLogger(t *testing.T) {
+	runtime.GOMAXPROCS(4)
 	tlh := &testLogHandler{}
 	tlh.hnd = &LogHandlerFunc{
-		RegularLogFunc: func(level LogLevel, header string, message ...any) {
+		Converter: func(
+			origin func(header string, message ...any) func(io.StringWriter),
+			header string,
+			message ...any,
+		) func(io.StringWriter) {
 			tlh.h = header
 			tlh.logs = append(tlh.logs, message...)
+			return origin(header, message...)
 		},
-		PanicLogFunc: func(header string, message ...any) {
+		RegularLogFunc: func(level LogLevel, pnt func(io.StringWriter)) {
+			sb := strings.Builder{}
+			pnt(&sb)
+			tlh.fullmsg = sb.String()
+		},
+		PanicLogFunc: func(pnt func(io.StringWriter), info string) func() {
 			tlh.panicCalled = true
-			tlh.h = header
-			tlh.logs = append(tlh.logs, message...)
+			sb := strings.Builder{}
+			pnt(&sb)
+			tlh.fullmsg = sb.String()
+			tlh.pncmsg = info
+			return nil
 		},
-		FatalLogFunc: func(header string, message ...any) {
+		FatalLogFunc: func(pnt func(io.StringWriter)) func() {
 			tlh.fatalCalled = true
-			tlh.h = header
-			tlh.logs = append(tlh.logs, message...)
+			sb := strings.Builder{}
+			pnt(&sb)
+			tlh.fullmsg = sb.String()
+			return nil
 		},
-		warpper: &LogHandlerFunc{
-			RegularLogFunc: func(level LogLevel, header string, message ...any) {
+		Warpper: &LogHandlerFunc{
+			RegularLogFunc: func(level LogLevel, pnt func(io.StringWriter)) {
 				tlh.wrpcalled = true
 			},
-			PanicLogFunc: func(header string, message ...any) {
+			PanicLogFunc: func(pnt func(io.StringWriter), info string) func() {
 				tlh.wrpspcalled = true
+				return nil
 			},
-			FatalLogFunc: func(header string, message ...any) {
+			FatalLogFunc: func(pnt func(io.StringWriter)) func() {
 				tlh.wrpspcalled = true
+				return nil
 			},
+			Warpper: TinyLogHandlerFunc(
+				func(level LogLevel, pnt func(io.StringWriter)) {
+					tlh.tinyCalled = true
+				}),
 		},
 	}
 
 	Convey("Logger tests", t, func() {
+		// default config test
 		Convey("Create logger in default config", func() {
 			l := New("", LogConfig{})
 			So(l, ShouldNotBeNil)
@@ -159,6 +194,8 @@ func TestLogger(t *testing.T) {
 			l.SetTimeFormat("15:04")
 			So(loginst.timefmt, ShouldEqual, "15:04")
 		})
+
+		// custom config test
 		Convey("Create logger with custom config", func() {
 			l := New("TestPrefix", LogConfig{
 				Level:          INFO,
@@ -177,27 +214,33 @@ func TestLogger(t *testing.T) {
 			l.Dbg("a", "b", "C")
 			So(len(tlh.logs), ShouldEqual, 0)
 			So(tlh.h, ShouldEqual, "")
+			So(tlh.fullmsg, ShouldEqual, "")
 			So(tlh.wrpcalled, ShouldBeFalse)
 			l.SetLevel(DEBUG)
 			So(loginst.level, ShouldEqual, DEBUG)
 			l.Dbg("a", "b", "C")
 			So(len(tlh.logs), ShouldEqual, 3)
 			So(tlh.h[13:], ShouldEqual, "[DEBUG], TestPrefix - ")
-			So(tlh.wrpcalled, ShouldBeTrue) // warpper should be called
+			So(tlh.fullmsg, ShouldContainSubstring, "a b C")
+			So(tlh.wrpcalled, ShouldBeTrue)  // warpper should be called
+			So(tlh.tinyCalled, ShouldBeTrue) // tiny warpper should be called
 			tlh.clean()
 			l.Inf("info message", 123)
 			So(len(tlh.logs), ShouldEqual, 2)
 			So(tlh.h[13:], ShouldEqual, "[INFO], TestPrefix - ")
+			So(tlh.fullmsg, ShouldContainSubstring, "info message")
 			tlh.clean()
 			l.War("warn message")
 			So(len(tlh.logs), ShouldEqual, 1)
 			So(tlh.h[13:32], ShouldEqual, "[WARN], TestPrefix ")
 			So(tlh.h[32:], ShouldStartWith, "logger_test.go")
+			So(tlh.fullmsg, ShouldContainSubstring, "warn message")
 			tlh.clean()
 			l.Err("error message")
 			So(len(tlh.logs), ShouldEqual, 1)
 			So(tlh.h[13:33], ShouldEqual, "[ERROR], TestPrefix ")
 			So(tlh.h[33:], ShouldStartWith, "logger_test.go")
+			So(tlh.fullmsg, ShouldContainSubstring, "error message")
 			tlh.clean()
 			tlh.wrpcalled = false
 			l.Panic("panic message")
@@ -205,12 +248,16 @@ func TestLogger(t *testing.T) {
 			So(tlh.panicCalled, ShouldBeTrue)
 			So(tlh.h[13:33], ShouldEqual, "[PANIC], TestPrefix ")
 			So(tlh.h[33:], ShouldStartWith, ">> Stacks:\n")
+			So(tlh.tinyCalled, ShouldBeTrue) // tiny warpper should be called
+			So(tlh.fullmsg, ShouldContainSubstring, "panic message")
+			So(tlh.pncmsg, ShouldContainSubstring, "panic message")
 			tlh.clean()
 			l.Fatal("fatal message")
 			So(len(tlh.logs), ShouldEqual, 1)
 			So(tlh.fatalCalled, ShouldBeTrue)
 			So(tlh.h[13:33], ShouldEqual, "[FATAL], TestPrefix ")
 			So(tlh.h[33:], ShouldStartWith, ">> Stacks:\n")
+			So(tlh.fullmsg, ShouldContainSubstring, "fatal message")
 			// should not call Panic/Fatal on warpper
 			So(tlh.wrpspcalled, ShouldBeFalse)
 			// should call regular log on warpper
@@ -261,6 +308,74 @@ func TestLogger(t *testing.T) {
 			So(loginst.logHandler, ShouldEqual, NativeLogHandler)
 			l.SetLogHandler(tlh.hnd)
 			So(loginst.logHandler, ShouldEqual, tlh.hnd)
+		})
+
+		// TinyLogHandlerFunc test
+		Convey("TinyLogHandlerFunc test", func() {
+			status := [fATAL + 1]bool{}
+			cnt := ""
+			tlhTiny := TinyLogHandlerFunc(func(level LogLevel, pnt func(io.StringWriter)) {
+				status[level] = true
+				sb := strings.Builder{}
+				pnt(&sb)
+				cnt = sb.String()
+			})
+			l := New("", LogConfig{
+				Handler: tlhTiny,
+			})
+			l.Dbg("dbg")
+			So(cnt, ShouldContainSubstring, "dbg")
+			l.Inf("inf")
+			So(cnt, ShouldContainSubstring, "inf")
+			l.War("war")
+			So(cnt, ShouldContainSubstring, "war")
+			l.Err("err")
+			So(cnt, ShouldContainSubstring, "err")
+			l.Panic("panic")
+			So(cnt, ShouldContainSubstring, "panic")
+			l.Fatal("fatal")
+			So(cnt, ShouldContainSubstring, "fatal")
+			So(status[DEBUG], ShouldBeTrue)
+			So(status[INFO], ShouldBeTrue)
+			So(status[WARN], ShouldBeTrue)
+			So(status[ERROR], ShouldBeTrue)
+			So(status[pANIC], ShouldBeTrue)
+			So(status[fATAL], ShouldBeTrue)
+		})
+
+		Convey("FileLogHandler test", func() {
+			// create file log handler
+			ctx, cancel := context.WithCancel(context.Background())
+			logpath := "__test_log_handler.log"
+			os.Remove(logpath)
+			fh, err := NewFileAccessorLogHandler(ctx, logpath)
+			So(err, ShouldBeNil)
+			So(fh, ShouldNotBeNil)
+			l := New("", LogConfig{
+				Handler: &LogHandlerFunc{
+					Warpper: fh,
+				},
+			})
+			// write logs
+			l.Dbg("debug message")
+			l.Inf("info message")
+			l.War("warn message")
+			l.Err("error message")
+			time.Sleep(3 * time.Second) // wait for flush
+			stat, err := os.Stat(logpath)
+			So(err, ShouldBeNil)
+			size := stat.Size()
+			So(size > 0, ShouldBeTrue)
+			l.Dbg("another debug message")
+			// clean up
+			cancel()
+			time.Sleep(1 * time.Second) // wait for file close
+			stat, err = os.Stat(logpath)
+			So(err, ShouldBeNil)
+			size2 := stat.Size()
+			So(size2 > size, ShouldBeTrue)
+			// remove log file
+			os.Remove(logpath)
 		})
 	})
 }
