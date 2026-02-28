@@ -4,6 +4,7 @@ package nekomimi
 
 import (
 	"fmt"
+	"io"
 	"runtime"
 	"strings"
 	"sync"
@@ -103,6 +104,19 @@ type TraceLogger interface {
 	TraceName() string
 }
 
+// RawWriter is an interface that combines io.StringWriter and io.Writer for
+// raw log writing.
+//
+// NOTE: the bytes writter only for provide third-party compatibility, due to
+// the log handler only accept string input, the bytes writter will convert the
+// input bytes to string automatically, some invalid UTF-8 bytes might be lost
+// during the conversion, also few performance might be lost due to the
+// conversion.
+type RawWriter interface {
+	io.StringWriter
+	io.Writer
+}
+
 // Logger is the full-featured logger interface
 type Logger interface {
 	BasicLogger
@@ -114,6 +128,20 @@ type Logger interface {
 	Fatalf(format string, args ...any)
 	// Create a new TraceLogger with the given name
 	Trace(name string) TraceLogger
+	// Get a StringWriter for the given log level.
+	// each writer operation will be regarded as a complete log message, the
+	// StringWriter will always make sure string have complete writer, and return
+	// length always equal to the length of the input string. the log header will
+	// be automatically added to the beginning of the log message, and will
+	// automatically add a newline character at the end of the log message if
+	// it's not already present.
+	// set the argument calltrace to false you can force disable call trace
+	// information in the log header.
+	// returns nil if the log level is not enabled.
+	GetWriter(level LogLevel, calltrace bool) io.StringWriter
+	// Get a RawWriter. which directly write the input message to the log handler
+	// without any modification.
+	RawWriter() RawWriter
 	// Derive a new Logger with the given prefix name
 	Derive(pfx string) Logger
 	// Set log level
@@ -159,6 +187,13 @@ type logger struct {
 type traceLogger struct {
 	parent *logger
 	tid    traceID
+}
+
+// levelWriter is a helper struct for implementing the GetWriter method of the
+// Logger interface
+type levelWriter struct {
+	parent    *logger
+	fmtHeader func() string
 }
 
 // newTraceID generates a new traceID with the given name
@@ -296,6 +331,25 @@ func (l *logger) outputPanicLog(message ...any) {
 func (l *logger) outputFatalLog(message ...any) {
 	header := l.getFmtHeader()(FATAL, nil)
 	l.logHandler.FatalLog(header, message...)
+}
+
+// ------- implement RawWriter interface for logger -------
+
+func (l *logger) WriteString(s string) (n int, err error) {
+	// INFO level just tell the log handler that this is a regular message.
+	// which distinguish from panic or fatal message that might be use different
+	// output method in the log handler.
+	l.logHandler.RegularWriter(INFO, func(w io.StringWriter) {
+		w.WriteString(s)
+	})
+	return len(s), nil
+}
+
+func (l *logger) Write(p []byte) (n int, err error) {
+	l.logHandler.RegularWriter(INFO, func(w io.StringWriter) {
+		w.WriteString(string(p))
+	})
+	return len(p), nil
 }
 
 // ------- implement BasicLogger interface for logger -------
@@ -476,6 +530,32 @@ func (l *logger) WrapLogHandler(wrapper func(old LogHandler) LogHandler) {
 	}
 }
 
+func (l *logger) GetWriter(level LogLevel, calltrace bool) io.StringWriter {
+	if atomic.LoadUint32((*uint32)(&l.level)) <= uint32(level) {
+		ctlv := level
+		if !calltrace {
+			ctlv = ctlv + 1
+		}
+		fh := getHeaderFormatter(
+			l.timefmt,
+			l.prefix,
+			ctlv,
+			7,
+		)
+		return &levelWriter{
+			parent: l,
+			fmtHeader: func() string {
+				return fh(level, nil)
+			},
+		}
+	}
+	return nil
+}
+
+func (l *logger) RawWriter() RawWriter {
+	return l
+}
+
 // --------------------------------------------------------------
 
 // ------- implement TraceLogger interface for traceLogger -------
@@ -575,6 +655,19 @@ func (tl *traceLogger) TraceID() string {
 
 func (tl *traceLogger) TraceName() string {
 	return tl.tid.name
+}
+
+// ------- implement StringWriter interface for levelWriter -------
+
+func (lw *levelWriter) WriteString(s string) (n int, err error) {
+	lw.parent.logHandler.RegularWriter(INFO, func(w io.StringWriter) {
+		w.WriteString(lw.fmtHeader())
+		w.WriteString(s)
+		if !strings.HasSuffix(s, "\n") {
+			w.WriteString("\n")
+		}
+	})
+	return len(s), nil
 }
 
 // --------------------------------------------------------------

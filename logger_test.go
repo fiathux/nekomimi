@@ -377,5 +377,68 @@ func TestLogger(t *testing.T) {
 			// remove log file
 			os.Remove(logpath)
 		})
+
+		Convey("Writer and RAWWriter test", func() {
+			var pmsg string
+			var called [3]bool // regular, panic, fatal
+			l := New("TestPrefix", LogConfig{
+				Handler: &LogHandlerFunc{
+					RegularLogFunc: func(level LogLevel, pnt func(io.StringWriter)) {
+						called[0] = true
+						sb := strings.Builder{}
+						pnt(&sb)
+						pmsg = sb.String()
+					},
+					PanicLogFunc: func(pnt func(io.StringWriter), info string) func() {
+						called[1] = true
+						return nil
+					},
+					FatalLogFunc: func(pnt func(io.StringWriter)) func() {
+						called[2] = true
+						return nil
+					},
+				},
+				Level: DEBUG,
+			})
+			w := l.GetWriter(DEBUG, true)
+			_, err := w.WriteString("test writer")
+			So(err, ShouldBeNil)
+			So(pmsg, ShouldContainSubstring, "test writer")
+			So(pmsg, ShouldContainSubstring, "logger_test.go")
+			So(strings.HasSuffix(pmsg, "\n"), ShouldBeTrue)
+			So(called[0], ShouldBeTrue)
+			So(called[1], ShouldBeFalse)
+			So(called[2], ShouldBeFalse)
+			t.Log("pmsg: ", pmsg)
+			pmsg = ""
+			w = l.GetWriter(DEBUG, false)
+			_, err = w.WriteString("test writer 2")
+			So(err, ShouldBeNil)
+			So(pmsg, ShouldContainSubstring, "test writer 2")
+			So(pmsg, ShouldNotContainSubstring, ".go")
+			So(strings.HasSuffix(pmsg, "\n"), ShouldBeTrue)
+			t.Log("pmsg: ", pmsg)
+
+			pmsg = ""
+			called = [3]bool{}
+			rw := l.RawWriter()
+			n, err := rw.Write([]byte("test raw writer bytes"))
+			So(n, ShouldEqual, len("test raw writer bytes"))
+			So(err, ShouldBeNil)
+			So(pmsg, ShouldEqual, "test raw writer bytes")
+			So(called[0], ShouldBeTrue)
+			So(called[1], ShouldBeFalse)
+			So(called[2], ShouldBeFalse)
+
+			pmsg = ""
+			called = [3]bool{}
+			n, err = rw.WriteString("test raw writer string")
+			So(n, ShouldEqual, len("test raw writer string"))
+			So(err, ShouldBeNil)
+			So(pmsg, ShouldEqual, "test raw writer string")
+			So(called[0], ShouldBeTrue)
+			So(called[1], ShouldBeFalse)
+			So(called[2], ShouldBeFalse)
+		})
 	})
 }
