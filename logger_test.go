@@ -419,6 +419,10 @@ func TestLogger(t *testing.T) {
 			So(strings.HasSuffix(pmsg, "\n"), ShouldBeTrue)
 			t.Log("pmsg: ", pmsg)
 
+			l.SetLevel(WARN)
+			w = l.GetWriter(DEBUG, false)
+			So(w, ShouldBeNil)
+
 			pmsg = ""
 			called = [3]bool{}
 			rw := l.RawWriter()
