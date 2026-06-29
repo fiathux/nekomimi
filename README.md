@@ -501,22 +501,29 @@ go run examples/basic/main.go
 
 ## Benchmarks
 
-Performance benchmarks are in `benchmark/`. Run with:
+Benchmarks use 20,000 writes per rotation benchmark for statistically
+meaningful samples.  Rotations trigger every 100 entries (= 200 rotations
+per iteration).
 
 ```bash
 go test -bench=. -benchmem ./benchmark/
+
+# with profiling
+./benchmark/pprof.sh                    # all benchmarks
+./benchmark/pprof.sh Write_Rotate100    # single benchmark
+go tool pprof cpu.out                   # inspect
 ```
 
 Typical results (Intel Core 7 250H, Linux):
 
 | Scenario | ns/op | allocs | Note |
 |----------|-------|--------|------|
-| `BenchmarkFile_Write` | ~1,000 | 4 | pure write, no rotation |
-| `BenchmarkFile_RegularWriter` | ~430 | 2 | fastest raw writer path |
-| `BenchmarkFile_Write_Parallel` | ~2,600 | 4 | mutex contention (20 goroutines) |
-| `BenchmarkFile_Write_Rotate100` | ~1,250/entry | — | rotation every 100 entries, amortised |
-| `BenchmarkFile_Write_Rotate100_ArchiveGzip` | ~5,600/entry | 4 | write+rotate; gzip residual ~10,000 ns per file |
-| `BenchmarkFile_GzipOneArchive` | ~575,000 | 29 | pure gzip of one 50 KB archive |
+| `BenchmarkFile_Write` | ~900 | 4 | pure write, no rotation |
+| `BenchmarkFile_RegularWriter` | ~460 | 2 | fastest raw writer path |
+| `BenchmarkFile_Write_Parallel` | ~2,400 | 4 | mutex contention (20 goroutines) |
+| `BenchmarkFile_Write_Rotate100` | ~1,085/entry | — | rotation every 100 entries, amortised over 20k writes |
+| `BenchmarkFile_Write_Rotate100_ArchiveGzip` | ~4,700/entry | 4 | write+rotate; gzip residual ~6,000 ns per file |
+| `BenchmarkFile_GzipOneArchive` | ~480,000 | 29 | pure gzip of one 50 KB archive |
 | `BenchmarkNet_TCP_RegularLog` | ~4,900 | 12 | JSON + TCP write |
 | `BenchmarkNet_UDP_RegularLog` | ~4,400 | 14 | JSON + UDP send |
 

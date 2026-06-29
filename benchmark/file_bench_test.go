@@ -185,10 +185,10 @@ func BenchmarkFile_RegularWriter(b *testing.B) {
 	}
 }
 
-// —– rotation every 100 entries, 2000 entries total (20 rotations) ——
+// —– rotation every 100 entries, 20000 entries per b.N iteration ——
 
 const rotateInterval = 100
-const totalEntries = 2000
+const totalEntries = 20000
 
 func BenchmarkFile_Write_Rotate100(b *testing.B) {
 	dir := tempDir(b)
@@ -205,8 +205,8 @@ func BenchmarkFile_Write_Rotate100(b *testing.B) {
 
 	header := benchHeader
 	msg := smallMsg
-	// each sub-loop of totalEntries entries includes ~20 rotations;
-	// benchmark framework calls b.N times → b.N * 20 rotations total
+	// each inner loop of totalEntries writes includes 200 rotations;
+	// the framework runs b.N outer iterations for stable measurement
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < totalEntries; j++ {
