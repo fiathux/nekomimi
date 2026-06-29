@@ -16,7 +16,11 @@ go get github.com/fiathux/nekomimi
 - Trace logging for request/operation tracking with unique IDs
 - Derived loggers with hierarchical prefixes
 - Customizable log handlers with composition support
-- Built-in file logging handler with automatic flushing
+- **Advanced file handler** with automatic rotation (size/items/TTL),
+  gzip compression, archive management, and crash recovery
+- **Network log handler** with TCP/UDP JSON transport, automatic
+  reconnection, and write deadline detection
+- Built-in basic file logging handler with automatic flushing
 - Handler wrapping for chaining multiple handlers
 - Customizable time format
 - Configurable call trace level
@@ -124,9 +128,114 @@ apiLogger.Inf("Server started")
 dbLogger.SetLevel(nekomimi.WARN)
 ```
 
-### File Logging
+### Advanced File Rotation Handler
 
-Use the built-in file handler for automatic file logging with periodic flushing:
+Use `handlers/filerotate` for production-grade file logging with automatic rotation,
+compression, and archive management:
+
+```go
+import (
+	"context"
+	"github.com/fiathux/nekomimi"
+	"github.com/fiathux/nekomimi/handlers/filerotate"
+)
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+// Create a file rotation handler
+fileHandler, err := filerotate.New(ctx, filerotate.Config{
+	Path:         "/var/log/myapp",
+	FilePrefix:   "app",
+	MaxFileSize:  10240,   // 10 MB per file
+	MaxFileItems: 100000,  // or 100k entries per file
+	MaxFileTTL:   1440,    // or 24 hours per file
+	MaxArchives:  30,      // keep 30 archives
+	Compress:     true,    // gzip old archives
+	RotatePanic:  false,   // don't crash on rotation failure
+})
+if err != nil {
+	panic(err)
+}
+
+logger := nekomimi.New("MyApp", nekomimi.LogConfig{
+	Handler: nekomimi.NewNativeLogHandler(fileHandler),
+})
+```
+
+Key features:
+- Rotation triggers: max file size (KB), max entry count, or max TTL (minutes)
+- Failure recovery: if a rotation fails, fallback filenames (`_1.log` – `_5.log`) are tried;
+  if all fail, the handler suspends writes without crashing the application
+- Crash recovery: on restart, residual log files are automatically archived;
+  the audit task periodically retries suspended operations
+- Archive cleanup: oldest archives deleted when `MaxArchives` is exceeded
+
+### Network Log Handler
+
+Use `handlers/netlog` to send JSON-formatted logs over TCP or UDP:
+
+```go
+import (
+	"context"
+	"github.com/fiathux/nekomimi"
+	"github.com/fiathux/nekomimi/handlers/netlog"
+)
+
+ctx := context.Background()
+
+// TCP with automatic reconnection
+netHandler, err := netlog.New(ctx, netlog.Config{
+	Connect:  "tcp://log-collector:28280",
+	WrapOnly: true,    // don't trigger panic/exit in this handler
+})
+
+// Log to both file and network
+logger := nekomimi.New("MyApp", nekomimi.LogConfig{
+	Handler: nekomimi.NewNativeLogHandler(netHandler),
+})
+```
+
+JSON format (one object per line):
+```json
+{"level":"INFO","header":"2026-06-27 10:00:00.000 [INFO], MyApp - ","body":"service started"}
+```
+
+Key features:
+- TCP: automatic reconnection every 2 seconds; write deadline detection prevents
+  stalled connections from blocking callers
+- UDP: fire-and-forget, silent on failure
+- `WrapOnly` mode: when set, Panic/Fatal messages are sent as regular log entries
+  instead of crashing the program (the outermost handler in a chain handles crashes)
+
+### Handler Composition with New Handlers
+
+Combine file and network handlers via `Wrapper` chaining:
+
+```go
+fileHandler, _ := filerotate.New(ctx, filerotate.Config{...})
+netHandler, _ := netlog.New(ctx, netlog.Config{
+	Connect:  "tcp://collector:28280",
+	WrapOnly: true, // network handler only transports, doesn't crash
+})
+
+// File handler wraps network handler — logs go to both
+// Native handler wraps file handler — also outputs to console
+logger := nekomimi.New("MyApp", nekomimi.LogConfig{
+	Handler: nekomimi.NewNativeLogHandler(
+		&nekomimi.LogHandlerFunc{
+			RegularLogFunc: func(lv nekomimi.LogLevel, pnt func(io.StringWriter)) {
+				pnt(os.Stdout)
+			},
+			Wrapper: netHandler,
+		},
+	),
+})
+```
+
+### Basic File Logging
+
+Use the built-in basic file handler for simple file logging with periodic flushing:
 
 ```go
 import (
@@ -173,7 +282,7 @@ logger := nekomimi.New("CustomLogger", nekomimi.LogConfig{
 })
 ```
 
-### Handler Composition
+### Basic Handler Composition
 
 Combine multiple handlers using the wrapper pattern:
 
@@ -378,14 +487,37 @@ type TraceLogger interface {
 
 ## Examples
 
-See the [examples/basic](examples/basic/main.go) directory for a comprehensive demo covering all features.
+| Example | Description |
+|---------|—————|
+| [examples/basic](examples/basic/main.go) | Comprehensive demo covering all core features |
+| [examples/filerotate](examples/filerotate/main.go) | Advanced file rotation handler with compression and archives |
+| [examples/netlog](examples/netlog/main.go) | Network log handler with TCP/UDP transport |
 
-To run the demo:
+To run:
 
 ```bash
-cd examples/basic
-go run main.go
+go run examples/basic/main.go
 ```
+
+## Benchmarks
+
+Performance benchmarks are in `benchmark/`. Run with:
+
+```bash
+go test -bench=. -benchmem ./benchmark/
+```
+
+Typical results (Intel Core 7 250H, Linux):
+
+| Scenario | ns/op | allocs |
+|----------|-------|--------|
+| File `RegularLog` (no rotation) | ~1,000 | 4 |
+| File `RegularWriter` | ~470 | 2 |
+| File parallel (20 goroutines) | ~2,300 | 4 |
+| File with rotation check | ~1,000 | 4 |
+| File with gzip compression | ~150,000 | 46 |
+| TCP `RegularLog` | ~5,000 | 12 |
+| UDP `RegularLog` | ~4,800 | 14 |
 
 ## License
 
