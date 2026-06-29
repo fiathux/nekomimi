@@ -488,7 +488,7 @@ type TraceLogger interface {
 ## Examples
 
 | Example | Description |
-|---------|—————|
+|---------|-------------|
 | [examples/basic](examples/basic/main.go) | Comprehensive demo covering all core features |
 | [examples/filerotate](examples/filerotate/main.go) | Advanced file rotation handler with compression and archives |
 | [examples/netlog](examples/netlog/main.go) | Network log handler with TCP/UDP transport |
