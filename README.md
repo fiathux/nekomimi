@@ -509,15 +509,22 @@ go test -bench=. -benchmem ./benchmark/
 
 Typical results (Intel Core 7 250H, Linux):
 
-| Scenario | ns/op | allocs |
-|----------|-------|--------|
-| File `RegularLog` (no rotation) | ~1,000 | 4 |
-| File `RegularWriter` | ~470 | 2 |
-| File parallel (20 goroutines) | ~2,300 | 4 |
-| File with rotation check | ~1,000 | 4 |
-| File with gzip compression | ~150,000 | 46 |
-| TCP `RegularLog` | ~5,000 | 12 |
-| UDP `RegularLog` | ~4,800 | 14 |
+| Scenario | ns/op | allocs | Note |
+|----------|-------|--------|------|
+| `BenchmarkFile_Write` | ~1,000 | 4 | pure write, no rotation |
+| `BenchmarkFile_RegularWriter` | ~430 | 2 | fastest raw writer path |
+| `BenchmarkFile_Write_Parallel` | ~2,600 | 4 | mutex contention (20 goroutines) |
+| `BenchmarkFile_Write_Rotate100` | ~1,250/entry | — | rotation every 100 entries, amortised |
+| `BenchmarkFile_Write_Rotate100_ArchiveGzip` | ~5,600/entry | 4 | write+rotate; gzip residual ~10,000 ns per file |
+| `BenchmarkFile_GzipOneArchive` | ~575,000 | 29 | pure gzip of one 50 KB archive |
+| `BenchmarkNet_TCP_RegularLog` | ~4,900 | 12 | JSON + TCP write |
+| `BenchmarkNet_UDP_RegularLog` | ~4,400 | 14 | JSON + UDP send |
+
+> `Write_Rotate100_ArchiveGzip` uses `b.StopTimer`/`b.ReportMetric`
+> to separate the write path from background gzip.  The
+> `archive-gzip-residual-ns-per-file` metric measures only the time
+> required to finish straggler gzip goroutines *after* all writes
+> complete — most compression overlaps asynchronously with writes.
 
 ## License
 
