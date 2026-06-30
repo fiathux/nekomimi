@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"os"
 	"os/signal"
@@ -32,11 +31,11 @@ func main() {
 	fileHandler, err := filerotate.New(ctx, filerotate.Config{
 		Path:         "/tmp/nekomimi-filerotate",
 		FilePrefix:   "app",
-		MaxFileSize:  32 * 1024, // 1 KB
-		MaxFileItems: 10000,     // 10 entries per file
-		MaxFileTTL:   0,         // 1 minute
-		MaxArchives:  5,         // keep latest 5 archives
-		Compress:     true,      // gzip archived files
+		MaxFileSize:  1,    // 1 KB
+		MaxFileItems: 10,   // 10 entries per file
+		MaxFileTTL:   1,    // 1 minute
+		MaxArchives:  5,    // keep latest 5 archives
+		Compress:     true, // gzip archived files
 		RotatePanic:  false,
 	})
 	if err != nil {
@@ -44,11 +43,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	startTs := time.Now()
-
 	// Wrap with native handler for console output.
 	logger := nekomimi.New("FilerotateDemo", nekomimi.LogConfig{
-		Handler: fileHandler,
+		Handler: nekomimi.NewNativeLogHandler(fileHandler),
 	})
 
 	// Write small messages (not triggering size rotation).
@@ -80,19 +77,8 @@ func main() {
 		logger.Panic("intentional panic for demonstration")
 	}()
 
-	var randbyte [100]byte
-	rand.Read(randbyte[:])
-	randstr := fmt.Sprintf("%x", randbyte[:])
-	for i := 0; i < 200000; i++ {
-		logger.Inff("flood entry %d, %s", i, string(randstr))
-	}
-
 	logger.Inf("file rotation demo finished")
 	fmt.Println("\nCheck /tmp/nekomimi-filerotate for rotated log files.")
-	spend := time.Since(startTs)
-	fmt.Printf("Total time spent: %v\n", spend)
-
-	time.Sleep(10 * time.Second)
 
 	// Context cancellation triggers final flush and shutdown.
 	cancel()
