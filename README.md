@@ -202,11 +202,20 @@ JSON format (one object per line):
 ```
 
 Key features:
-- TCP: automatic reconnection every 2 seconds; write deadline detection prevents
-  stalled connections from blocking callers
+- TCP: automatic reconnection every 2 seconds; a write deadline (2 s)
+  ensures a stalled connection does not block indefinitely
 - UDP: fire-and-forget, silent on failure
 - `WrapOnly` mode: when set, Panic/Fatal messages are sent as regular log entries
   instead of crashing the program (the outermost handler in a chain handles crashes)
+
+> **Known Limitation — TCP**
+>
+> Each `Write` call holds an internal mutex.  When the peer becomes
+> unreachable and the OS has not yet reported a broken connection, the
+> 2‑second write deadline blocks **all** concurrent log calls.  This
+> makes TCP mode unsuitable for environments with unreliable network
+> links (e.g. public internet, slow WAN).  UDP mode is unaffected — it
+> is fire‑and‑forget and never blocks.
 
 ### Handler Composition with New Handlers
 
