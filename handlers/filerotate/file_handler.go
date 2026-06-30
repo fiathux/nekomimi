@@ -109,6 +109,12 @@ type handler struct {
 	// lastFlushCount tracks byteCount at last flush
 	lastFlushCount int64
 
+	// archive-name deduplication: when multiple rotations happen
+	// within the same calendar second, a monotonic counter avoids
+	// filename collisions.
+	lastArchiveSec int64 // seconds-since-midnight of last rotation
+	archiveNameN   int   // counter within the same second
+
 	// ticker bookkeeping
 	tickCount int
 
@@ -206,30 +212,52 @@ func New(ctx context.Context, cfg Config) (nekomimi.LogHandler, error) {
 }
 
 // scanAndArchive lists all residual log files and archives them.
+// Before archiving, it scans existing archives to detect the highest
+// counter per timestamp key so that newly archived files do not
+// collide with existing ones.
 func (h *handler) scanAndArchive() {
 	entries, err := os.ReadDir(h.cfg.Path)
 	if err != nil {
 		return // silent
 	}
+
+	// Phase 1: find the highest counter for each timestamp key among
+	// existing archives.
+	counterMap := buildCounterMap(entries, h.cfg.FilePrefix)
+
+	// Phase 2: archive residuals, using counterMap for dedup.
 	for _, entry := range entries {
 		name := entry.Name()
-		if !h.matchLogFile(name) {
+		if entry.IsDir() || !h.matchLogFile(name) {
 			continue
 		}
-		h.archiveFile(name)
+		h.archiveFileWithCounter(name, counterMap)
 	}
+
+	// Seed the in-memory counter for future rotations from the current
+	// second's highest counter.
+	nowSec := time.Now().Unix() % 86400
+	h.archiveNameN = counterMap[nowSec]
+	h.lastArchiveSec = nowSec
 }
 
-// archiveFile renames a log file to its timestamp-based archive name and
-// optionally starts background gzip compression.
-func (h *handler) archiveFile(name string) {
+// archiveFileWithCounter renames a residual log file to an archive
+// name, using counterMap to resolve collisions within the same second.
+func (h *handler) archiveFileWithCounter(
+	name string, counterMap map[int64]int,
+) {
 	srcPath := filepath.Join(h.cfg.Path, name)
 	ts := h.extractTimestamp(srcPath)
+	sec := ts % 86400
+	n := counterMap[sec]       // post-increment: first gets 0
+	counterMap[sec]++
+
 	t := time.Unix(ts, 0).UTC()
-	archiveName := fmt.Sprintf("%s_%s_%d.log",
+	archiveName := fmt.Sprintf("%s_%s_%05d_%04d.log",
 		h.cfg.FilePrefix,
 		t.Format("060102"),
-		ts%86400,
+		sec,
+		n,
 	)
 	dstPath := filepath.Join(h.cfg.Path, archiveName)
 
@@ -244,6 +272,53 @@ func (h *handler) archiveFile(name string) {
 			h.compressFile(dstPath)
 		}()
 	}
+}
+
+// buildCounterMap scans directory entries for archive files and returns
+// the count of archived files per seconds-since-midnight key.  The value
+// is the next available counter (e.g. 3 means files _0000, _0001, _0002
+// already exist).
+func buildCounterMap(
+	entries []os.DirEntry, prefix string,
+) map[int64]int {
+	cm := make(map[int64]int)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isArchiveFile(name, prefix) {
+			continue
+		}
+		sec, cnt := parseArchiveSecAndCounter(name, prefix)
+		// store count = max counter + 1
+		if cur, ok := cm[sec]; !ok || cnt >= cur {
+			cm[sec] = cnt + 1
+		}
+	}
+	return cm
+}
+
+// parseArchiveSecAndCounter extracts the seconds-since-midnight and the
+// counter from an archive filename.  Returns (0, 0) on parse failure.
+func parseArchiveSecAndCounter(
+	name, prefix string,
+) (int64, int) {
+	base := strings.TrimSuffix(
+		strings.TrimSuffix(name, ".gz"), ".log")
+	rest := base[len(prefix)+1:]
+	parts := strings.SplitN(rest, "_", 3)
+	if len(parts) < 2 {
+		return 0, 0
+	}
+	sec, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0
+	}
+	cnt := 0
+	if len(parts) >= 3 {
+		if v, err := strconv.Atoi(parts[2]); err == nil {
+			cnt = v
+		}
+	}
+	return sec, cnt
 }
 
 // extractTimestamp reads the first line of a file to extract a creation
@@ -488,13 +563,23 @@ func (h *handler) rotate() {
 }
 
 // archiveName generates the archive filename from the current file's
-// creation timestamp.
+// creation timestamp.  A monotonic counter is appended to avoid
+// collisions when multiple rotations happen within the same second.
 func (h *handler) archiveName() string {
+	ts := h.fileCreatedAt.Unix()
+	sec := ts % 86400
+	if sec != h.lastArchiveSec {
+		h.archiveNameN = 0     // new second, reset
+		h.lastArchiveSec = sec
+	}
+	n := h.archiveNameN       // post-increment: first gets 0
+	h.archiveNameN++
 	t := h.fileCreatedAt.UTC()
-	return fmt.Sprintf("%s_%s_%d.log",
+	return fmt.Sprintf("%s_%s_%05d_%04d.log",
 		h.cfg.FilePrefix,
 		t.Format("060102"),
-		h.fileCreatedAt.Unix()%86400,
+		sec,
+		n,
 	)
 }
 
@@ -615,19 +700,26 @@ func (h *handler) archiveAllResidual() bool {
 		return false
 	}
 
+	counterMap := buildCounterMap(entries, h.cfg.FilePrefix)
+
 	hasArchived := false
 	for _, entry := range entries {
 		name := entry.Name()
-		if !h.matchLogFile(name) {
+		if entry.IsDir() || !h.matchLogFile(name) {
 			continue
 		}
 		srcPath := filepath.Join(h.cfg.Path, name)
 		ts := h.extractTimestamp(srcPath)
+		sec := ts % 86400
+		n := counterMap[sec] // post-increment: first gets 0
+		counterMap[sec]++
+
 		t := time.Unix(ts, 0).UTC()
-		archiveName := fmt.Sprintf("%s_%s_%d.log",
+		archiveName := fmt.Sprintf("%s_%s_%05d_%04d.log",
 			h.cfg.FilePrefix,
 			t.Format("060102"),
-			ts%86400,
+			sec,
+			n,
 		)
 		dstPath := filepath.Join(h.cfg.Path, archiveName)
 
@@ -726,7 +818,8 @@ func (h *handler) cleanArchives(skipKeys map[string]struct{}) {
 }
 
 // isArchiveFile reports whether name matches the archive file pattern:
-// <prefix>_<yymmdd>_<seconds>.log[.gz]
+// <prefix>_<yymmdd>_<seconds>_<counter>.log[.gz]
+// counter is a zero-padded 4-digit sequence within the same second.
 func isArchiveFile(name, prefix string) bool {
 	base := name
 	base = strings.TrimSuffix(base, ".gz")
@@ -737,13 +830,20 @@ func isArchiveFile(name, prefix string) bool {
 		return false
 	}
 	rest := base[len(p):]
-	parts := strings.SplitN(rest, "_", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(rest, "_", 3)
+	if len(parts) < 2 {
 		return false
 	}
-	_, err1 := strconv.Atoi(parts[0])
-	_, err2 := strconv.Atoi(parts[1])
-	return err1 == nil && err2 == nil && len(parts[0]) == 6
+	// yymmdd must be exactly 6 digits
+	if len(parts[0]) != 6 {
+		return false
+	}
+	for _, s := range parts {
+		if _, err := strconv.Atoi(s); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // matchLogFile reports whether a file is a residual log file that should

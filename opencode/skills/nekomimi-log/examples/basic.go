@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Example: basic nekomimi usage — init, three method families, dynamic
 // level changes.
 package main

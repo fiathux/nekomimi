@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Example: building custom log handlers.
 //
 // Demonstrates TinyLogHandlerFunc for minimal cases and LogHandlerFunc

@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Example: handler composition — build chains that write to stdout,
 // files, and the network simultaneously.
 //

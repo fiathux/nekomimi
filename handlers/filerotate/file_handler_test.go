@@ -3,6 +3,7 @@ package filerotate
 import (
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -142,7 +143,7 @@ func TestNew_ArchivesOldFiles(t *testing.T) {
 	require.NotNil(t, h)
 
 	files := listFiles(t, dir)
-	assert.Contains(t, files, "app_700101_100.log")
+	assert.Contains(t, files, "app_700101_00100_0000.log")
 	assert.Contains(t, files, "app.log")
 }
 
@@ -163,8 +164,8 @@ func TestNew_ArchivesOldFallbackFiles(t *testing.T) {
 	require.NotNil(t, h)
 
 	files := listFiles(t, dir)
-	assert.Contains(t, files, "app_700101_100.log")
-	assert.Contains(t, files, "app_700101_200.log")
+	assert.Contains(t, files, "app_700101_00100_0000.log")
+	assert.Contains(t, files, "app_700101_00200_0000.log")
 	assert.Contains(t, files, "app.log")
 }
 
@@ -353,12 +354,55 @@ func TestLogRotation_ArchiveNaming(t *testing.T) {
 	for _, f := range files {
 		if strings.HasPrefix(f, "app_") && strings.HasSuffix(f, ".log") &&
 			f != "app.log" && !strings.HasSuffix(f, ".gz") {
-			assert.Regexp(t, `^app_\d{6}_\d+\.log$`, f,
-				"archive should match prefix_yymmdd_seconds.log")
+			assert.Regexp(t, `^app_\d{6}_\d{5}_\d{4}\.log$`, f,
+				"archive should match prefix_yymmdd_seconds_counter.log")
 			hasArchive = true
 		}
 	}
 	assert.True(t, hasArchive, "archive file should exist")
+}
+
+// ============================================================
+// TestLogRotation_SameSecond
+// ============================================================
+func TestLogRotation_SameSecond(t *testing.T) {
+	dir := tempDir(t)
+	ctx := context.Background()
+
+	// Force all rotations to use the same timestamp so they collide
+	// within one second.  This verifies the counter suffix avoids
+	// filename clashes.
+	fixedTime := time.Now()
+	h, err := New(ctx, Config{
+		Path:        dir,
+		FilePrefix:  "app",
+		MaxFileSize: 1,
+		testForceCreationTime: fixedTime,
+	})
+	require.NoError(t, err)
+
+	bigMsg := strings.Repeat("x", 2048)
+	// trigger 3 rotations within the same logical second
+	for i := 0; i < 3; i++ {
+		h.RegularLog(nekomimi.INFO, "h ", bigMsg)
+	}
+
+	files := listFiles(t, dir)
+	archiveNames := make(map[string]bool)
+	for _, f := range files {
+		if isArchiveFile(f, "app") {
+			archiveNames[f] = true
+		}
+	}
+	assert.Len(t, archiveNames, 3,
+		"same-second rotations must produce distinct archive names")
+	// each should have a unique counter suffix
+	assert.True(t, archiveNames["app_"+fixedTime.UTC().Format("060102")+"_"+
+		fmt.Sprintf("%05d", fixedTime.Unix()%86400)+"_0000.log"])
+	assert.True(t, archiveNames["app_"+fixedTime.UTC().Format("060102")+"_"+
+		fmt.Sprintf("%05d", fixedTime.Unix()%86400)+"_0001.log"])
+	assert.True(t, archiveNames["app_"+fixedTime.UTC().Format("060102")+"_"+
+		fmt.Sprintf("%05d", fixedTime.Unix()%86400)+"_0002.log"])
 }
 
 // ============================================================
@@ -998,12 +1042,12 @@ func TestConcurrent_MultipleGoroutines(t *testing.T) {
 // TestArchiveFileNaming
 // ============================================================
 func TestArchiveFileNaming(t *testing.T) {
-	assert.True(t, isArchiveFile("app_260627_45045.log", "app"))
-	assert.True(t, isArchiveFile("app_260627_45045.log.gz", "app"))
-	assert.True(t, isArchiveFile("app_700101_100.log", "app"))
+	assert.True(t, isArchiveFile("app_260627_45045_0000.log", "app"))
+	assert.True(t, isArchiveFile("app_260627_45045_0001.log.gz", "app"))
+	assert.True(t, isArchiveFile("app_700101_00100_0000.log", "app"))
 	assert.False(t, isArchiveFile("app.log", "app"))
 	assert.False(t, isArchiveFile("app_1.log", "app"))
-	assert.False(t, isArchiveFile("other_260627_45045.log", "app"))
+	assert.False(t, isArchiveFile("other_260627_45045_0000.log", "app"))
 }
 
 // ============================================================

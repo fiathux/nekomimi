@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Example: logger initialization patterns — init() singleton, Derive()
 // hierarchy.
 package main

@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Example: integrating nekomimi as Gin's log output via middleware.
 //
 // Requires: go get github.com/gin-gonic/gin
