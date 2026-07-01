@@ -30,6 +30,11 @@ const (
 	PANIC
 	// FATAL level for fatal error messages
 	FATAL
+
+	// TINY_DONE is a non-logging probe level used by
+	// TinyLogHandlerFunc.IsShutdown to detect whether the
+	// underlying handler has permanently stopped processing.
+	TINY_DONE LogLevel = 0x80000000
 )
 
 // String returns the string representation of the log level
@@ -47,6 +52,8 @@ func (l LogLevel) String() string {
 		return "PANIC"
 	case FATAL:
 		return "FATAL"
+	case TINY_DONE:
+		return "TINY_DONE"
 	default:
 		return "UNKNOWN"
 	}

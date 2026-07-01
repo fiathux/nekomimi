@@ -84,6 +84,10 @@ type Config struct {
 	// testForceCreationTime overrides the file creation time used for
 	// TTL rotation checks in tests.
 	testForceCreationTime time.Time
+	// testCompressStarted is an optional channel closed when a
+	// compression goroutine enters its body, signalling the test
+	// that compression work is in-flight. Only used by tests.
+	testCompressStarted chan struct{}
 }
 
 // handler implements the file rotation log handler using LogHandlerFunc.
@@ -126,6 +130,13 @@ type handler struct {
 	// is still being read by a compression goroutine.  Key format:
 	// "yymmdd_seconds" (e.g. "260627_45045").  Protected by mu.
 	compressing map[string]struct{}
+
+	// shutdownDone is closed after the handler's shutdown sequence
+	// completes: state transitions to stateClosed, the current file
+	// is flushed and closed, and all compression goroutines have
+	// drained (compressWG reaches zero).  Used by IsShutdown() to
+	// report full termination.
+	shutdownDone chan struct{}
 
 	// test-only: tick interval override
 	tickInterval time.Duration
@@ -180,6 +191,7 @@ func New(ctx context.Context, cfg Config) (nekomimi.LogHandler, error) {
 		tickInterval:  ti,
 		auditInterval: ai,
 		compressing:   make(map[string]struct{}),
+		shutdownDone:  make(chan struct{}),
 	}
 
 	// Ensure target directory exists
@@ -203,6 +215,14 @@ func New(ctx context.Context, cfg Config) (nekomimi.LogHandler, error) {
 		PanicLogFunc:   h.panicLogFunc,
 		FatalLogFunc:   h.fatalLogFunc,
 		Wrapper:        cfg.Wrapper,
+		IsShutdownFunc: func() bool {
+			select {
+			case <-h.shutdownDone:
+				return true
+			default:
+				return false
+			}
+		},
 	}
 
 	// Start background goroutine
@@ -267,7 +287,11 @@ func (h *handler) archiveFileWithCounter(
 
 	if h.cfg.Compress {
 		h.compressWG.Add(1)
+		started := h.cfg.testCompressStarted
 		go func() {
+			if started != nil {
+				close(started)
+			}
 			defer h.compressWG.Done()
 			h.compressFile(dstPath)
 		}()
@@ -515,7 +539,11 @@ func (h *handler) rotate() {
 	if err := os.Rename(currentPath, archivePath); err == nil {
 		if h.cfg.Compress {
 			h.compressWG.Add(1)
+			started := h.cfg.testCompressStarted
 			go func() {
+				if started != nil {
+					close(started)
+				}
 				defer h.compressWG.Done()
 				h.compressFile(archivePath)
 			}()
@@ -629,6 +657,7 @@ func (h *handler) shutdown() {
 		}
 	}()
 	h.compressWG.Wait()
+	close(h.shutdownDone)
 }
 
 // onTick handles periodic flush, TTL check, and audit tasks.

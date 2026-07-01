@@ -214,6 +214,8 @@ func (m *mockHandler) PanicLog(header string, message ...any) {}
 
 func (m *mockHandler) FatalLog(header string, message ...any) {}
 
+func (m *mockHandler) IsShutdown() bool { return false }
+
 // ------- tests -------
 
 // newTestContext creates a context that is automatically cancelled when
@@ -755,4 +757,95 @@ loop:
 		goroutines*msgPerRoutine)
 	assert.Greater(t, count, 0,
 		"should receive at least some UDP log entries")
+}
+
+// TestIsShutdown_BeforeShutdown verifies IsShutdown returns false while the
+// handler is active and the context has not been cancelled.
+func TestIsShutdown_BeforeShutdown(t *testing.T) {
+	addr, lis, _ := serveTCP(t)
+	defer lis.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := New(ctx, Config{Connect: "tcp://" + addr})
+	require.NoError(t, err)
+
+	assert.False(t, h.IsShutdown(),
+		"IsShutdown should be false while handler is active")
+}
+
+// TestIsShutdown_AfterContextCancel_TCP verifies IsShutdown returns true
+// after the context is cancelled and the background loop has exited.
+func TestIsShutdown_AfterContextCancel_TCP(t *testing.T) {
+	addr, lis, _ := serveTCP(t)
+	defer lis.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := New(ctx, Config{Connect: "tcp://" + addr})
+	require.NoError(t, err)
+
+	cancel()
+
+	assert.Eventually(t, func() bool {
+		return h.IsShutdown()
+	}, 2*time.Second, 50*time.Millisecond,
+		"IsShutdown should become true after context cancel for TCP")
+}
+
+// TestIsShutdown_AfterContextCancel_UDP verifies IsShutdown returns true
+// after the context is cancelled for UDP connections.
+func TestIsShutdown_AfterContextCancel_UDP(t *testing.T) {
+	addr, pconn, _ := serveUDP(t)
+	defer pconn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := New(ctx, Config{Connect: "udp://" + addr})
+	require.NoError(t, err)
+
+	cancel()
+
+	assert.Eventually(t, func() bool {
+		return h.IsShutdown()
+	}, 2*time.Second, 50*time.Millisecond,
+		"IsShutdown should become true after context cancel for UDP")
+}
+
+// TestIsShutdown_DuringTCPReconnect verifies IsShutdown returns false while
+// the handler is disconnected and bgLoop is attempting reconnection. The
+// handler is not shutdown in this state — only ctx cancellation triggers
+// final shutdown.
+func TestIsShutdown_DuringTCPReconnect(t *testing.T) {
+	addr, _, _ := serveTCP(t)
+
+	origInterval := reconnectInterval
+	reconnectInterval = 50 * time.Millisecond
+	defer func() { reconnectInterval = origInterval }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := New(ctx, Config{Connect: "tcp://" + addr})
+	require.NoError(t, err)
+
+	// Force disconnect by closing conn from test side
+	nh := h.(*netHandler)
+	nh.mu.Lock()
+	nh.conn.Close()
+	nh.conn = nil
+	nh.mu.Unlock()
+
+	// During reconnection attempt, handler is not shutdown
+	assert.False(t, h.IsShutdown(),
+		"IsShutdown should be false during TCP reconnection attempt")
+
+	cancel()
+	assert.Eventually(t, func() bool {
+		return h.IsShutdown()
+	}, 2*time.Second, 50*time.Millisecond,
+		"IsShutdown should become true after context cancel")
 }

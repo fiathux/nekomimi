@@ -53,6 +53,11 @@ type netHandler struct {
 	cancel  context.CancelFunc
 	network string // "tcp" or "udp"
 	addr    string // host:port
+
+	// shutdownDone is closed when bgLoop exits, signalling that the
+	// connection has been closed and no further reconnection attempts
+	// will be made.  Used by IsShutdown() to report full termination.
+	shutdownDone chan struct{}
 }
 
 // New creates a new network log handler. The Connect URL must use
@@ -87,12 +92,13 @@ func New(ctx context.Context, cfg Config) (nekomimi.LogHandler, error) {
 	hctx, cancel := context.WithCancel(ctx)
 
 	h := &netHandler{
-		cfg:     cfg,
-		conn:    conn,
-		ctx:     hctx,
-		cancel:  cancel,
-		network: u.Scheme,
-		addr:    addr,
+		cfg:          cfg,
+		conn:         conn,
+		ctx:          hctx,
+		cancel:       cancel,
+		network:      u.Scheme,
+		addr:         addr,
+		shutdownDone: make(chan struct{}),
 	}
 
 	go h.bgLoop()
@@ -109,6 +115,7 @@ func New(ctx context.Context, cfg Config) (nekomimi.LogHandler, error) {
 // net.Dial can block for seconds on timeout and must be done outside
 // the lock so it does not stall RegularLog / RegularWriter callers.
 func (h *netHandler) bgLoop() {
+	defer close(h.shutdownDone)
 	if h.network == "tcp" {
 		ticker := time.NewTicker(reconnectInterval)
 		defer ticker.Stop()
@@ -192,6 +199,18 @@ func makePnt(header string, message ...any) func(io.StringWriter) {
 	return func(w io.StringWriter) {
 		w.WriteString(header)
 		w.WriteString(sp)
+	}
+}
+
+// IsShutdown returns true when the handler has fully terminated: the
+// background loop has exited, the connection has been closed, and no
+// further reconnection attempts will be made.
+func (h *netHandler) IsShutdown() bool {
+	select {
+	case <-h.shutdownDone:
+		return true
+	default:
+		return false
 	}
 }
 

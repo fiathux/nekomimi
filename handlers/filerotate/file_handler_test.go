@@ -1145,3 +1145,88 @@ func TestFatalLog_SuspendedNoExitWhenWrapped(t *testing.T) {
 	assert.False(t, exitCalled,
 		"WrapOnly fatal should not exit in suspended")
 }
+
+// TestIsShutdown_BeforeShutdown verifies IsShutdown returns false while the
+// handler is active and the context has not been cancelled.
+func TestIsShutdown_BeforeShutdown(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := New(ctx, Config{
+		Path:       dir,
+		FilePrefix: "test",
+		Compress:   false,
+	})
+	require.NoError(t, err)
+
+	assert.False(t, h.IsShutdown(),
+		"IsShutdown should be false while handler is active")
+}
+
+// TestIsShutdown_AfterContextCancel verifies IsShutdown returns true after
+// the context is cancelled and all background tasks have completed.
+func TestIsShutdown_AfterContextCancel(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := New(ctx, Config{
+		Path:       dir,
+		FilePrefix: "test",
+		Compress:   false,
+	})
+	require.NoError(t, err)
+	h.RegularLog(nekomimi.INFO, "h ", "msg before cancel")
+
+	cancel()
+
+	// Wait briefly for shutdown to complete (synchronous: no compression)
+	assert.Eventually(t, func() bool {
+		return h.IsShutdown()
+	}, 2*time.Second, 50*time.Millisecond,
+		"IsShutdown should become true after context cancel (no compression)")
+}
+
+// TestIsShutdown_WithCompressionInFlight verifies IsShutdown returns false
+// while compression is still running after context cancellation, and returns
+// true once compression finishes.
+func TestIsShutdown_WithCompressionInFlight(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	compressStarted := make(chan struct{})
+
+	h, err := New(ctx, Config{
+		Path:                dir,
+		FilePrefix:          "comp",
+		MaxFileSize:         1, // trigger rotation on each large write
+		Compress:            true,
+		testCompressStarted: compressStarted,
+	})
+	require.NoError(t, err)
+
+	// Trigger rotation to spawn compression goroutine
+	bigMsg := strings.Repeat("x", 2048)
+	h.RegularLog(nekomimi.INFO, "h ", bigMsg)
+
+	// Wait for compression goroutine to enter its body
+	select {
+	case <-compressStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("compression goroutine did not start")
+	}
+
+	cancel()
+
+	// Compression still in-flight — IsShutdown must return false
+	assert.False(t, h.IsShutdown(),
+		"IsShutdown should be false while compression is in-flight")
+
+	// Eventually shutdown completes after compression goroutine drains
+	assert.Eventually(t, func() bool {
+		return h.IsShutdown()
+	}, 5*time.Second, 100*time.Millisecond,
+		"IsShutdown should become true after compression goroutine drains")
+}

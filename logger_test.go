@@ -444,5 +444,82 @@ func TestLogger(t *testing.T) {
 			So(called[1], ShouldBeFalse)
 			So(called[2], ShouldBeFalse)
 		})
+
+		Convey("LogHandlerFunc IsShutdown tests", func() {
+			Convey("No Wrapper, no IsShutdownFunc → false", func() {
+				h := &LogHandlerFunc{}
+				So(h.IsShutdown(), ShouldBeFalse)
+			})
+
+			Convey("Only IsShutdownFunc returns true → true", func() {
+				h := &LogHandlerFunc{
+					IsShutdownFunc: func() bool { return true },
+				}
+				So(h.IsShutdown(), ShouldBeTrue)
+			})
+
+			Convey("Only IsShutdownFunc returns false → false", func() {
+				h := &LogHandlerFunc{
+					IsShutdownFunc: func() bool { return false },
+				}
+				So(h.IsShutdown(), ShouldBeFalse)
+			})
+
+			Convey("Wrapper not shutdown → false even if Func true", func() {
+				wrapper := TinyLogHandlerFunc(
+					func(level LogLevel, pnt func(io.StringWriter)) {
+						pnt(&strings.Builder{})
+					})
+				h := &LogHandlerFunc{
+					Wrapper:        wrapper,
+					IsShutdownFunc: func() bool { return true },
+				}
+				So(h.IsShutdown(), ShouldBeFalse)
+			})
+
+			Convey("Wrapper shutdown + Func true → true", func() {
+				wrapper := TinyLogHandlerFunc(
+					func(level LogLevel, pnt func(io.StringWriter)) {
+					})
+				h := &LogHandlerFunc{
+					Wrapper:        wrapper,
+					IsShutdownFunc: func() bool { return true },
+				}
+				So(h.IsShutdown(), ShouldBeTrue)
+			})
+		})
+
+		Convey("TinyLogHandlerFunc IsShutdown tests", func() {
+			Convey("Pnt called → handler active → false", func() {
+				h := TinyLogHandlerFunc(
+					func(level LogLevel, pnt func(io.StringWriter)) {
+						pnt(&strings.Builder{})
+					})
+				So(h.IsShutdown(), ShouldBeFalse)
+			})
+
+			Convey("Pnt NOT called → handler shutdown → true", func() {
+				h := TinyLogHandlerFunc(
+					func(level LogLevel, pnt func(io.StringWriter)) {
+					})
+				So(h.IsShutdown(), ShouldBeTrue)
+			})
+		})
+
+		Convey("NewNativeLogHandlerWithContext tests", func() {
+			Convey("Background context → never shutdown", func() {
+				h := NewNativeLogHandler(nil)
+				So(h.IsShutdown(), ShouldBeFalse)
+			})
+
+			Convey("Cancelled context → shutdown", func() {
+				ctx, cancel := context.WithCancel(
+					context.Background())
+				h := NewNativeLogHandlerWithContext(ctx, nil)
+				So(h.IsShutdown(), ShouldBeFalse)
+				cancel()
+				So(h.IsShutdown(), ShouldBeTrue)
+			})
+		})
 	})
 }

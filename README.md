@@ -22,6 +22,8 @@ go get github.com/fiathux/nekomimi
   reconnection, and write deadline detection
 - Built-in basic file logging handler with automatic flushing
 - Handler wrapping for chaining multiple handlers
+- Graceful shutdown awareness: `IsShutdown()` reports when
+  handler IO and background tasks have completed
 - Customizable time format
 - Configurable call trace level
 - Thread-safe operations
@@ -359,17 +361,14 @@ The `LogHandler` interface defines how log messages are processed and written:
 
 ```go
 type LogHandler interface {
-	// RegularLog handles regular log messages with a specified log level
 	RegularLog(level LogLevel, header string, message ...any)
-	
-	// RegularWriter provides low-level access to write log content
 	RegularWriter(level LogLevel, pnt func(io.StringWriter))
-	
-	// PanicLog handles panic-level log messages and triggers panic
 	PanicLog(header string, message ...any)
-	
-	// FatalLog handles fatal-level log messages and terminates the program
 	FatalLog(header string, message ...any)
+	// IsShutdown returns true when the handler has permanently and
+	// irreversibly closed — all IO and background tasks have
+	// safely terminated. Once true, it never returns false.
+	IsShutdown() bool
 }
 ```
 
@@ -389,12 +388,16 @@ fileHandler, err := nekomimi.NewFileAccessorLogHandler(ctx, "app.log")
 // Returns TinyLogHandlerFunc
 ```
 
-**NewNativeLogHandler** - Creates a native handler with optional wrapper:
+**NewNativeLogHandler** / **NewNativeLogHandlerWithContext** - Creates a
+native handler with optional wrapper:
+
 ```go
-// With wrapper
+// With background context — IsShutdown() never becomes true
 handler := nekomimi.NewNativeLogHandler(fileHandler)
-// Without wrapper
-handler := nekomimi.NewNativeLogHandler(nil)
+
+// With a cancellable context — IsShutdown() reflects ctx.Done()
+ctx, cancel := context.WithCancel(context.Background())
+handler := nekomimi.NewNativeLogHandlerWithContext(ctx, fileHandler)
 ```
 
 #### Custom Handler Implementation
@@ -408,6 +411,10 @@ type LogHandlerFunc struct {
 	PanicLogFunc   func(...) func() // Panic log with finalizer
 	FatalLogFunc   func(...) func() // Fatal log with finalizer
 	Wrapper        LogHandler    // Optional chained handler
+	// IsShutdownFunc reports whether this handler's own resources
+	// have been released. If nil, the handler has no self-awareness
+	// and IsShutdown() returns false regardless of Wrapper state.
+	IsShutdownFunc func() bool
 }
 ```
 
@@ -416,18 +423,48 @@ type LogHandlerFunc struct {
 type TinyLogHandlerFunc func(level LogLevel, pnt func(io.StringWriter))
 ```
 
-### Log Levels
+> **Note**: TinyLogHandlerFunc.IsShutdown() uses a probe mechanism. When
+> the underlying resource (file, connection) is permanently closed, the
+> implementation should return without calling `pnt`. This allows the
+> probe to detect termination.
+
+#### Handler Shutdown Lifecycle
+
+Advanced handlers (`filerotate`, `netlog`) bind their lifecycle to a
+`context.Context`. Use `IsShutdown()` to wait for graceful termination:
 
 ```go
-const (
-	DEBUG  // Detailed debugging information
-	INFO   // General informational messages
-	WARN   // Warning messages
-	ERROR  // Error messages
-	PANIC  // Critical errors that cause panic
-	FATAL  // Fatal errors that terminate the program
-)
+ctx, cancel := context.WithCancel(context.Background())
+
+// Create a file rotation handler
+fileHandler, _ := filerotate.New(ctx, filerotate.Config{
+	Path: "/var/log/app", FilePrefix: "app",
+})
+
+// ... application runs ...
+
+// Initiate shutdown
+cancel()
+
+// Wait for handler to finish flushing, closing files, and
+// completing any in-flight compression
+for !fileHandler.IsShutdown() {
+	time.Sleep(100 * time.Millisecond)
+}
+// Safe to exit: all IO is done, no goroutines remain
 ```
+
+**Shutdown behaviour by handler type:**
+
+| Handler | `IsShutdown()` becomes true when |
+|---------|----------------------------------|
+| `filerotate` | ctx cancelled, file flushed+closed, all compression goroutines drained |
+| `netlog` TCP | ctx cancelled, connection closed, bgLoop goroutine exited |
+| `netlog` UDP | ctx cancelled, connection closed, bgLoop goroutine exited |
+| `NewFileAccessorLogHandler` (TinyLogHandlerFunc) | ctx cancelled, file flushed+closed |
+| `NewNativeLogHandler` | Never (background context) |
+| `NewNativeLogHandlerWithContext` | ctx.Done() fires |
+| bare `LogHandlerFunc` without `IsShutdownFunc` | Never |
 
 ### Logger Interface
 
