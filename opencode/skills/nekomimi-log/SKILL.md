@@ -166,8 +166,9 @@ loggers obtain independent references.  See `examples/derived.go`.
 
 ## Handlers
 
-A `LogHandler` controls *where* log messages go.  The interface has four
-methods: `RegularLog`, `RegularWriter`, `PanicLog`, and `FatalLog`.
+A `LogHandler` controls *where* log messages go.  The interface has five
+methods: `RegularLog`, `RegularWriter`, `PanicLog`, `FatalLog`, and
+`IsShutdown`.
 
 ### Default: `NativeLogHandler` (stdout/stderr)
 
@@ -278,6 +279,73 @@ Output format (one JSON object per line):
 Combine multiple handlers by nesting `Wrapper` fields.  See
 `examples/handler_compose.go` for a file → network → stdout chain.
 
+### Handler Lifecycle & Graceful Shutdown
+
+Advanced handlers (`filerotate`, `netlog`) are bound to a
+`context.Context`.  Cancelling the context triggers a graceful shutdown
+sequence: freeze writes, flush buffers, wait for background tasks
+(compression, reconnection) to drain, then release resources.
+
+Use `IsShutdown()` to wait for the handler to fully terminate **after**
+cancelling the context.  It returns `true` only when all I/O and
+background goroutines have safely completed.
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+
+// Create handlers bound to the context
+fh, _ := filerotate.New(ctx, filerotate.Config{
+    Path: "/var/log/app", FilePrefix: "app",
+    WrapOnly:    true,
+})
+nh, _ := netlog.New(ctx, netlog.Config{
+    Connect: "tcp://collector:28280", WrapOnly: true,
+})
+log := nekomimi.New("app", nekomimi.LogConfig{
+    Handler: nekomimi.NewNativeLogHandlerWithContext(ctx, fh),
+})
+// ... application runs ...
+
+// --- shutdown sequence ---
+cancel()
+
+// Wait for filerotate to flush, close files, and drain compression
+for !fh.IsShutdown() {
+    time.Sleep(100 * time.Millisecond)
+}
+// Wait for netlog to close the socket and exit bgLoop
+for !nh.IsShutdown() {
+    time.Sleep(100 * time.Millisecond)
+}
+// Safe to exit: all I/O is done, no leaked goroutines
+```
+
+**Shutdown semantics by handler type:**
+
+| Handler | `IsShutdown()` becomes `true` when |
+|---------|------------------------------------|
+| `filerotate` | ctx cancelled, file flushed+closed, compression goroutines drained |
+| `netlog` TCP | ctx cancelled, socket closed, bgLoop exited |
+| `netlog` UDP | ctx cancelled, socket closed, bgLoop exited |
+| `NewFileAccessorLogHandler` | ctx cancelled, file flushed+closed |
+| `NewNativeLogHandlerWithContext` | ctx.Done() fires |
+| `NewNativeLogHandler` | Never (uses `context.Background()`) |
+| bare `LogHandlerFunc` | Never (no `IsShutdownFunc` set) |
+
+**Implementing IsShutdown in custom handlers:**
+
+- **`LogHandlerFunc`**: set the `IsShutdownFunc func() bool` field.  The
+  framework's `IsShutdown()` first checks `Wrapper.IsShutdown()`, then
+  calls `IsShutdownFunc`.  Both must return `true` for the handler to be
+  considered fully shut down.  Leave `IsShutdownFunc` nil if the handler
+  has no shutdown awareness.
+
+- **`TinyLogHandlerFunc`**: shutdown is detected via a probe mechanism.
+  When the underlying resource is permanently closed (e.g. `fp == nil`),
+  the implementation should **return without calling `pnt`**.  The probe
+  sends a `TINY_DONE` sentinel level with a marker function; if the
+  marker is never called, the handler is considered shut down.
+
 ---
 
 ## Gin Integration
@@ -334,10 +402,11 @@ h := nekomimi.TinyLogHandlerFunc(
 
 ### `LogHandlerFunc` — full implementation
 
-Five configurable fields.  `PanicLogFunc` and `FatalLogFunc` should
+Six configurable fields.  `PanicLogFunc` and `FatalLogFunc` should
 **only** be set when this handler is the outermost one in the chain;
-leave them nil otherwise.  For a complete annotated example see
-`examples/custom_handler.go`.
+leave them nil otherwise.  `IsShutdownFunc` reports whether the
+handler's own resources have been released.  For a complete annotated
+example see `examples/custom_handler.go`.
 
 ```go
 h := &nekomimi.LogHandlerFunc{
@@ -352,6 +421,12 @@ h := &nekomimi.LogHandlerFunc{
     FatalLogFunc: func(pnt func(io.StringWriter)) func() {
         pnt(os.Stderr)
         return func() { os.Exit(1) }
+    },
+    IsShutdownFunc: func() bool {        // shutdown awareness
+        select {
+        case <-ctx.Done(): return true
+        default:          return false
+        }
     },
     Wrapper: someOtherHandler,           // chain another handler
 }
@@ -384,6 +459,8 @@ calls, so it does not crash unless it is the outermost handler.
 | `.RawWriter()` | `RawWriter` | Bypasses header formatting |
 | `filerotate.New(ctx, cfg)` | `(LogHandler, error)` | File rotation handler |
 | `netlog.New(ctx, cfg)` | `(LogHandler, error)` | Network (TCP/UDP) handler |
+| `.IsShutdown()` | `bool` | Returns `true` when handler IO/goroutines terminated |
+| `nekomimi.NewNativeLogHandlerWithContext(ctx, wrap)` | `LogHandler` | Context-aware native handler for shutdown |
 
 ### Examples
 
