@@ -97,6 +97,11 @@ append a full stack trace to the log header and then trigger
 log entry.  See the [Wrapping](#wrapping-dual-output-stdout--file)
 section for how this is enforced for each handler type.
 
+`TINY_DONE` (`0x80000000`) is a non-logging sentinel level used
+internally by `TinyLogHandlerFunc.IsShutdown()`.  It is not emitted by
+the logger and should never appear in log output.  See [Handler
+Lifecycle & Graceful Shutdown](#handler-lifecycle--graceful-shutdown).
+
 The deferred-format helper `nekomimi.Fmt(...)` is available for
 collecting formatted data and only rendering the formatted version if the
 level is active.

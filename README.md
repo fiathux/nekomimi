@@ -355,6 +355,23 @@ type LogConfig struct {
 }
 ```
 
+### Log Levels
+
+```go
+const (
+	DEBUG  // Detailed debugging information
+	INFO   // General informational messages
+	WARN   // Warning messages
+	ERROR  // Error messages
+	PANIC  // Critical errors that cause panic
+	FATAL  // Fatal errors that terminate the program
+
+	// TINY_DONE is an internal probe level used by
+	// TinyLogHandlerFunc.IsShutdown(). Not for regular logging.
+	TINY_DONE LogLevel = 0x80000000
+)
+```
+
 ### Log Handler Interface
 
 The `LogHandler` interface defines how log messages are processed and written:
@@ -423,7 +440,8 @@ type LogHandlerFunc struct {
 type TinyLogHandlerFunc func(level LogLevel, pnt func(io.StringWriter))
 ```
 
-> **Note**: TinyLogHandlerFunc.IsShutdown() uses a probe mechanism. When
+> **Note**: TinyLogHandlerFunc.IsShutdown() uses a probe mechanism
+> based on the `TINY_DONE` sentinel level (`0x80000000`). When
 > the underlying resource (file, connection) is permanently closed, the
 > implementation should return without calling `pnt`. This allows the
 > probe to detect termination.
